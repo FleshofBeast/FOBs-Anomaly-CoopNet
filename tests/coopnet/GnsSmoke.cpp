@@ -11,6 +11,7 @@ int main(int argc, char** argv) {
         if (argc != 3) throw std::invalid_argument("Usage: GnsSmoke host|client endpoint-or-port");
         GnsRuntime runtime;
         const bool host_mode = std::string(argv[1]) == "host";
+        const bool timeout_mode = std::string(argv[1]) == "timeout";
         HostPump host; ClientPump client;
         bool snapshot_received = false, admitted = false, input_received = false;
         client.set_snapshot_sink([&](const ActorSnapshot& snapshot) {
@@ -27,7 +28,7 @@ int main(int argc, char** argv) {
             if (!host.create_actor({5,1,1,1,10})) throw std::runtime_error("Actor binding failed");
             std::cout << "LISTENING\n" << std::flush;
         } else {
-            if (std::string(argv[1]) != "client") throw std::invalid_argument("Invalid mode");
+            if (std::string(argv[1]) != "client" && !timeout_mode) throw std::invalid_argument("Invalid mode");
             const auto connection = runtime.connect(argv[2]);
             if (connection == k_HSteamNetConnection_Invalid) throw std::runtime_error("Connect failed");
             client.start(std::make_unique<GnsTransport>(runtime, connection), 2, {1,1});
@@ -67,6 +68,12 @@ int main(int argc, char** argv) {
                 }
             } else {
                 client.update(elapsed);
+                if(timeout_mode && (client.session().state()==ClientState::Disconnected || client.session().state()==ClientState::Offline)) {
+                    std::cout << "TIMEOUT_PASS unreachable endpoint never admitted; client disconnected\n";
+                    return 0;
+                }
+                if(timeout_mode && client.session().state()==ClientState::Connected)
+                    throw std::runtime_error("Unreachable endpoint unexpectedly admitted");
                 if (client.assignment().ticket) client.acknowledge_level(10);
                 if (client.actors().find(20)) client.send_input({20,1,10,++tick,1,.25f,0});
                 if (snapshot_received && client.roster() && client.roster()->current().participants.size() == 2) {

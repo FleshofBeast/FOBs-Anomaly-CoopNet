@@ -3,6 +3,7 @@
 #include <steam/steamnetworkingsockets.h>
 #include <steam/isteamnetworkingutils.h>
 #include <set>
+#include <string>
 
 namespace coopnet {
 // One runtime per process; poll and all adapter calls belong to its owner thread.
@@ -12,6 +13,7 @@ class GnsRuntime {
     HSteamListenSocket listener_ = k_HSteamListenSocket_Invalid;
     std::deque<HSteamNetConnection> pending_;
     std::set<HSteamNetConnection> connections_;
+    std::string last_failure_;
     static void changed(SteamNetConnectionStatusChangedCallback_t* event) {
         if (active_) active_->on_changed(*event);
     }
@@ -25,6 +27,7 @@ class GnsRuntime {
         }
         if (event.m_info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer ||
             event.m_info.m_eState == k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
+            last_failure_ = std::to_string(event.m_info.m_eEndReason) + ": " + event.m_info.m_szEndDebug;
             connections_.erase(event.m_hConn);
             for (auto it = pending_.begin(); it != pending_.end(); )
                 if (*it == event.m_hConn) it = pending_.erase(it); else ++it;
@@ -46,6 +49,7 @@ public:
         active_ = nullptr; GameNetworkingSockets_Kill();
     }
     ISteamNetworkingSockets& api() { return *api_; }
+    const std::string& last_failure() const { return last_failure_; }
     void poll() { api_->RunCallbacks(); }
     bool listen(std::uint16_t port) {
         if (!port || listener_ != k_HSteamListenSocket_Invalid) return false;

@@ -55,7 +55,7 @@ try {
         Close-OwnedProbe $hostProcess
         $guestLog=Get-Content (Join-Path $probeRoot 'guest/appdata/logs/xray_deadparrot.log') -Raw
         $hostLog=Get-Content (Join-Path $probeRoot 'host/appdata/logs/xray_deadparrot.log') -Raw
-        if($guestLog -notmatch 'version mismatch popup displayed: Host is using CoopNet 27.*mods 1.*Your version is CoopNet 27.*mods 3' -or
+        if($guestLog -notmatch 'connection failure popup displayed: Host is using CoopNet \d+.*mods 1.*Your version is CoopNet \d+.*mods 3' -or
             $hostLog -notmatch 'radio version mismatch: ".+" attempted to join but a version mismatch was detected' -or
             ($guestLog+$hostLog) -match 'FATAL ERROR|\[SCRIPT ERROR\]|CoopNet update failed' -or
             $hostLog -match 'native guest bound:') {throw "Native version rejection notice failed: $probeRoot"}

@@ -45,6 +45,7 @@ std::uint64_t pending_ready_incarnation=0;
 unsigned pending_ready_frames=0;
 bool pending_new_character=false;
 bool pending_character_probe=false;
+bool pending_menu_host=false;
 std::set<std::string> world_commands;
 bool host_application=false;
 void load_join_profiles() {
@@ -210,6 +211,9 @@ struct Session {
     coopnet::Identity host_character=0;
     std::string endpoint;
     double reconnect_wait=0,reconnect_delay=2;
+    double initial_join_time=0;
+    bool admitted_once=false;
+    std::string last_transport_failure;
     std::uint64_t save_scope=0,source_scope=0;
     coopnet::InventoryView exit_character;
     ActorConditionState exit_condition{1,1,0};
@@ -1309,7 +1313,7 @@ bool party_controls_enabled() {
         session->client.party_status().stage!=coopnet::PartyStage::Loading;
 }
 void update(double) {
-    if (!session && !pending_character_address.empty()) {
+    if (!session && (!pending_character_address.empty() || pending_menu_host)) {
         LocalActorPose selected;
         const bool ready=capture_local_actor(selected) && selected.incarnation!=pending_character_incarnation &&
             guest_save_scope() && character_selection_ready();
@@ -1321,7 +1325,14 @@ void update(double) {
             Msg("* CoopNet selected character initialization completed: incarnation %llu position %.3f %.3f %.3f",
                 selected.incarnation,selected.position[0],selected.position[1],selected.position[2]);
             const auto address=pending_character_address; pending_character_address.clear();
-            join_from_menu(address.c_str()); pending_new_character=false;
+            const bool hosting=pending_menu_host; pending_menu_host=false;
+            if(hosting) command("coop_host","27888 1 1 1");
+            if((hosting && (!session || session->mode!=coopnet::Mode::Host)) || (!hosting && !join_from_menu(address.c_str()))) {
+                version_mismatch_notice=menu_join_error;
+                Msg("! CoopNet queued menu join failed: %s",menu_join_error.c_str());
+                return_to_main_menu();
+            }
+            pending_new_character=false;
             if (pending_character_probe && session) command("coop_movement_probe","auto");
             pending_character_probe=false;
         }
@@ -1404,6 +1415,25 @@ void update(double) {
         } else {
             session->loot_retries.advance(elapsed);
             session->client.update(elapsed);
+            const auto& failure=session->runtime.last_failure();
+            if(!failure.empty() && failure!=session->last_transport_failure) {
+                session->last_transport_failure=failure;
+                Msg("! CoopNet transport failure at %s: %s",session->endpoint.c_str(),failure.c_str());
+            }
+            if(!session->admitted_once) {
+                if(session->client.session().state()==coopnet::ClientState::Connected) {
+                    session->admitted_once=true;
+                    Msg("* CoopNet host accepted connection: %s; loading shared world",session->endpoint.c_str());
+                } else {
+                    session->initial_join_time+=elapsed;
+                    if(session->initial_join_time>=30 && session->client.session().state()!=coopnet::ClientState::Rejected) {
+                        menu_join_error="Could not connect to "+session->endpoint+" within 30 seconds. Check that the host is running and UDP forwarding reaches the host. Your character has not joined the session.";
+                        version_mismatch_notice=menu_join_error;
+                        Msg("! CoopNet initial join failed: %s; transport: %s",menu_join_error.c_str(),failure.c_str());
+                        cancel_character_join(); stop(); return_to_main_menu(); return;
+                    }
+                }
+            }
             if(session->client.session().state()==coopnet::ClientState::Rejected) {
                 const auto& rejection=session->client.session().welcome();
                 if(rejection.result==coopnet::Admission::VersionMismatch || rejection.result==coopnet::Admission::BuildMismatch) {
@@ -1415,6 +1445,12 @@ void update(double) {
                     text<<". Install the same CoopNet release and matching mods.";
                     version_mismatch_notice=text.str();
                     Msg("! CoopNet version mismatch: %s",version_mismatch_notice.c_str());
+                    cancel_character_join(); stop(); return_to_main_menu(); return;
+                }
+                if(!(session->saved_resume_attempt && rejection.result==coopnet::Admission::InvalidResume)) {
+                    char text[512]; join_status(text,sizeof(text));
+                    menu_join_error=text; version_mismatch_notice=text;
+                    Msg("! CoopNet admission failed at %s: %s",session->endpoint.c_str(),text);
                     cancel_character_join(); stop(); return_to_main_menu(); return;
                 }
             }
@@ -1624,6 +1660,10 @@ void command(const char* name, const char* arguments) {
     try {
         if (!strcmp(name,"coop_join_menu")) { join_from_menu(arguments); return; }
         if (!strcmp(name,"coop_character_probe")) {
+            if(strstr(GetCommandLineA(),"-coop_host_menu_probe")) {
+                if(!queue_menu_host()) throw std::runtime_error("Unable to queue menu host probe");
+                return;
+            }
             if (!queue_character_join(arguments,strstr(GetCommandLineA(),"-coop_new_character_probe")!=nullptr)) throw std::runtime_error("Unable to queue character probe join");
             pending_character_probe=true; return;
         }
@@ -2070,6 +2110,13 @@ bool join_from_menu(const char* address) {
         return session && session->mode==coopnet::Mode::Client && session->endpoint==endpoint;
     } catch (const std::exception& error) { menu_join_error=error.what(); return false; }
 }
+bool validate_join_address(const char* address) {
+    std::string endpoint;
+    if(!address || !coopnet::normalize_endpoint(address,endpoint)) {
+        menu_join_error="Enter an IPv4 address, optionally followed by :port."; return false;
+    }
+    menu_join_error.clear(); return true;
+}
 bool queue_character_join(const char* address,bool create) {
     std::string normalized;
     if (!address || !coopnet::normalize_endpoint(address,normalized) || session) {
@@ -2078,7 +2125,14 @@ bool queue_character_join(const char* address,bool create) {
     LocalActorPose local; pending_character_incarnation=capture_local_actor(local) ? local.incarnation : 0;
     pending_character_address=normalized; pending_new_character=create; pending_ready_incarnation=0; pending_ready_frames=0; menu_join_error.clear(); return true;
 }
-void cancel_character_join() { pending_character_address.clear(); pending_new_character=false; pending_character_probe=false; }
+bool queue_menu_host() {
+    if(session) { menu_join_error="Leave the current session before hosting a new game."; return false; }
+    cancel_character_join();
+    LocalActorPose local; pending_character_incarnation=capture_local_actor(local) ? local.incarnation : 0;
+    pending_ready_incarnation=0; pending_ready_frames=0; pending_menu_host=true;
+    menu_join_error.clear(); return true;
+}
+void cancel_character_join() { pending_character_address.clear(); pending_new_character=false; pending_character_probe=false; pending_menu_host=false; }
 void join_status(char* output,unsigned capacity) {
     if (!output || !capacity) return;
     const char* status=menu_join_error.c_str();
@@ -2092,7 +2146,9 @@ void join_status(char* output,unsigned capacity) {
         }
         else if (session->client.baseline_acknowledged()) status="Connected. Your host controls the world settings.";
         else if (state==coopnet::ClientState::Connected) status="Connected. Loading the host's world...";
-        else status="Connecting to host...";
+        else if (state==coopnet::ClientState::Disconnected || state==coopnet::ClientState::Offline)
+            status="Not connected. Retrying the host...";
+        else status="Connecting to host. Waiting for acceptance...";
     }
     snprintf(output,capacity,"%s",status);
 }
@@ -2132,7 +2188,9 @@ void register_world_setting_command(const char*) {}
 bool host_settings_application() { return false; }
 void applying_host_settings(bool) {}
 bool join_from_menu(const char*) { return false; }
+bool validate_join_address(const char*) { return false; }
 bool queue_character_join(const char*,bool) { return false; }
+bool queue_menu_host() { return false; }
 void cancel_character_join() {}
 void saved_join_address(char* output,unsigned capacity) { if (output && capacity) output[0]=0; }
 void join_status(char* output,unsigned capacity) { if (output && capacity) snprintf(output,capacity,"CoopNet is unavailable in this build."); }

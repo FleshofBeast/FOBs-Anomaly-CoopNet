@@ -134,11 +134,19 @@ void CUIMMShniaga::CreateList(xr_vector<CUITextWnd*>& lst, CUIXml& xml_doc, LPCS
 		if (engine_coopnet::available() && !engine_coopnet::shared_world_active() &&
 			!xr_strcmp(xml_doc.ReadAttrib("btn", i, "name"), "btn_newgame"))
 		{
+			auto* host = xr_new<CUITextWnd>();
+			host->SetWndPos(Fvector2().set(0, 0));
+			host->SetWndSize(Fvector2().set(m_view->GetDesiredChildWidth(), button_height));
+			host->SetFont(pF); host->SetTextComplexMode(false);
+			host->SetText("Host game"); host->SetTextColor(color);
+			host->SetTextAlignment(CGameFont::alCenter); host->SetVTextAlignment(valCenter);
+			host->SetWindowName("btn_coop_host"); host->SetMessageTarget(this);
+			lst.push_back(host);
 			auto* join = xr_new<CUITextWnd>();
 			join->SetWndPos(Fvector2().set(0, 0));
 			join->SetWndSize(Fvector2().set(m_view->GetDesiredChildWidth(), button_height));
 			join->SetFont(pF); join->SetTextComplexMode(false);
-			join->SetText("Join CoopNet"); join->SetTextColor(color);
+			join->SetText("Join game"); join->SetTextColor(color);
 			join->SetTextAlignment(CGameFont::alCenter); join->SetVTextAlignment(valCenter);
 			join->SetWindowName("btn_coop_join"); join->SetMessageTarget(this);
 			lst.push_back(join);
@@ -370,7 +378,9 @@ bool CUIMMShniaga::OnMouseAction(float x, float y, EUIMessages mouse_action)
 
 void CUIMMShniaga::OnBtnClick()
 {
-	if (0 == xr_strcmp("btn_coop_join", m_selected->WindowName()))
+	if (0 == xr_strcmp("btn_coop_host", m_selected->WindowName()))
+		MainMenu()->ShowCoopHost();
+	else if (0 == xr_strcmp("btn_coop_join", m_selected->WindowName()))
 		MainMenu()->ShowCoopJoin();
 	else if (0 == xr_strcmp("btn_new_game", m_selected->WindowName()))
 		ShowNewGame();
