@@ -6,6 +6,7 @@
 #include "Entity.h"
 #include "actor.h"
 #include "../xrEngine/CoopNetRuntime.h"
+#include "../CoopNet/EngineWorldBridge.h"
 #include "xrserver_objects_alife_monsters.h"
 #include "entity.h"
 #include "level.h"
@@ -265,7 +266,7 @@ void CEntity::KillEntity(u16 whoID, BOOL bypass_actor_check /*AVO: added for act
 {
     if (engine_coopnet::shared_world_active()) {
         auto* actor=smart_cast<CActor*>(this);
-        if (actor && actor==g_actor && engine_coopnet::guest_settings_locked()) {
+        if (actor && actor==g_actor && engine_coopnet::guest_settings_locked() && !engine_coopnet::guest_native_world()) {
             if (actor->GetfHealth()<=0) actor->SetfHealth(.001f);
             return; // Only host condition updates may down a guest's local presentation actor.
         }

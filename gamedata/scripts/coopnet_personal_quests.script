@@ -1,0 +1,207 @@
+-- Only character task data crosses a canonical world load. Weather, simulation,
+-- difficulty and other world state remain in the host's save.
+local followers = {}
+local active_task
+local installed = false
+local references = {}
+
+local function remember(id)
+    if not id or references[id] then return end
+    local obj = alife_object(id)
+    if obj then references[id] = {name=obj:name(), section=obj:section_name()} end
+end
+
+function resolve_target(id)
+    local ref = references[id]
+    if not ref then return 65535 end
+    local match
+    for i=1,65534 do
+        local obj = alife_object(i)
+        if obj and obj:name()==ref.name and obj:section_name()==ref.section then
+            if match then return 65535 end -- Never guess between duplicate NPCs.
+            match = i
+        end
+    end
+    return match or 65535
+end
+
+function capture_empty()
+    return marshal.encode({schema=1,task_info={},task_objects={},pstor={},pstor_ctime={},references={}})
+end
+
+function capture()
+    references = {}
+    local data = {schema=1, clock=game.get_game_time()}
+    if db.actor:get_task("coopnet_personal_restore_probe",true) then
+        db.storage[db.actor:id()].pstor=db.storage[db.actor:id()].pstor or {}
+        db.storage[db.actor:id()].pstor.coopnet_personal_restore_probe=73
+        data.probe=true
+    end
+    task_manager.save_state(data)
+    for id,obj in pairs(data.task_objects) do
+        local live=task_manager.get_task_manager().task_info[id]
+        obj.forced_status=live and live.forced_status
+        obj.cancelled_by_actor=live and live.cancelled_by_actor
+        obj.last_check_task=live and live.last_check_task
+        remember(obj.task_giver_id)
+        remember(obj.current_target)
+    end
+    data.references = references
+    data.pstor = db.storage[db.actor:id()].pstor or {}
+    data.pstor_ctime = db.storage[db.actor:id()].pstor_ctime or {}
+    data.bounties = axr_task_manager.bounties_by_id or {}
+    data.hostages = axr_task_manager.hostages_by_id or {}
+    for id in pairs(data.bounties) do remember(id) end
+    for id in pairs(data.hostages) do remember(id) end
+    return marshal.encode(data)
+end
+
+function restore(bytes)
+    local data = marshal.decode(bytes)
+    if type(data)~="table" or data.schema~=1 or type(data.task_objects)~="table" then return false end
+    references = data.references or {}
+    for _,obj in pairs(data.task_objects) do
+        for _,field in ipairs({"timeout","inited_time"}) do
+            if obj[field] and data.clock then
+                local now=game.get_game_time()
+                if now>=data.clock then obj[field]:add(now-data.clock)
+                else obj[field]:sub(data.clock-now) end
+            end
+        end
+        local giver = obj.task_giver_id and resolve_target(obj.task_giver_id)
+        local target = obj.current_target and resolve_target(obj.current_target)
+        obj.task_giver_id = giver~=65535 and giver or nil
+        obj.current_target = target~=65535 and target or nil
+    end
+    local extra=data.task_objects
+    local flags={}
+    for id,obj in pairs(extra) do
+        flags[id]={forced_status=obj.forced_status,cancelled_by_actor=obj.cancelled_by_actor,last_check_task=obj.last_check_task}
+    end
+    task_manager.get_task_manager().task_info = {}
+    task_manager.load_state(data)
+    for id,state in pairs(flags) do
+        local obj=task_manager.get_task_manager().task_info[id]
+        if obj then
+            obj.forced_status=state.forced_status
+            obj.cancelled_by_actor=state.cancelled_by_actor
+            obj.last_check_task=state.last_check_task
+        end
+    end
+    local storage = db.storage[db.actor:id()]
+    storage.pstor = data.pstor or {}
+    storage.pstor_ctime = data.pstor_ctime or {}
+    if data.probe then
+        assert(storage.pstor.coopnet_personal_restore_probe==73,"Personal quest variable restore failed")
+        printf("* CoopNet personal Lua quest variable restored")
+    end
+    axr_task_manager.available_tasks = {}
+    axr_task_manager.ongoing_tasks = {}
+    axr_task_manager.finished_tasks = {}
+    local function remap_table(source)
+        local result={}
+        for id,value in pairs(source or {}) do
+            local target=resolve_target(id)
+            if target~=65535 then result[target]=value end
+        end
+        return result
+    end
+    axr_task_manager.bounties_by_id=remap_table(data.bounties)
+    axr_task_manager.hostages_by_id=remap_table(data.hostages)
+    return true
+end
+
+local function isolate(squad, quest, created)
+    for member in squad:squad_members() do
+        local obj = member.object or alife_object(member.id)
+        if obj and (not followers[obj.id] or followers[obj.id].name~=obj:name()) then
+            followers[obj.id] = {quest=quest, name=obj:name(), created=created,
+                x=obj.position.x, y=obj.position.y, z=obj.position.z,
+                lv=obj.m_level_vertex_id, gv=obj.m_game_vertex_id}
+            level.coop_private_quest_follower(obj.id,true)
+        end
+    end
+end
+
+local function return_home(quest)
+    for id,home in pairs(followers) do
+        if home.quest==quest then
+            local obj=alife_object(id)
+            if obj and obj:name()==home.name then
+                local pos=vector():set(home.x,home.y,home.z)
+                local online=level.object_by_id(id)
+                -- A dead follower stays dead. A different-level object is moved
+                -- through ALife rather than forcing a transform in this level.
+                local home_level=alife():level_name(game_graph():vertex(home.gv):level_id())
+                if online and online:alive() and home_level==level.name() then
+                    online:force_set_position(pos)
+                end
+                obj.position=pos
+                obj.m_level_vertex_id=home.lv
+                obj.m_game_vertex_id=home.gv
+            end
+            -- Quest-spawned followers remain private after dismissal; publishing
+            -- them would introduce a new NPC into everyone else's world.
+            if not home.created then
+                level.coop_private_quest_follower(id,false)
+                followers[id]=nil
+            end
+        end
+    end
+end
+
+function on_game_start()
+    if installed or not level.coop_native_world or not level.coop_native_world() then return end
+    installed=true
+    -- Shared-world radio has one producer. Otherwise the guest's native news
+    -- scheduler plays a broadcast locally, then plays the host's copy again.
+    -- Personal task notifications use news_manager and continue locally.
+    local radio_tip=dynamic_news_helper.send_tip
+    dynamic_news_helper.send_tip=function(...)
+        if level.coop_native_world() and level.coop_world_replica() then return end
+        return radio_tip(...)
+    end
+    local give=task_objects.CGeneralTask.give_task
+    task_objects.CGeneralTask.give_task=function(self,...)
+        if not level.coop_native_world() then return give(self,...) end
+        local previous=active_task
+        active_task=self.id
+        local ok,result=pcall(give,self,...)
+        active_task=previous
+        if not ok then error(result) end
+        return result
+    end
+    local setup=xr_effects.setup_companion_task
+    xr_effects.setup_companion_task=function(...)
+        local before={}
+        for id in pairs(axr_companions.companion_squads) do before[id]=true end
+        local result=setup(...)
+        if active_task then
+            for id,squad in pairs(axr_companions.companion_squads) do
+                if not before[id] then isolate(squad,active_task,true) end
+            end
+        end
+        return result
+    end
+    local add=axr_companions.add_special_squad
+    if add then
+        axr_companions.add_special_squad=function(squad,...)
+            if active_task and squad then isolate(squad,active_task,false) end
+            return add(squad,...)
+        end
+    end
+    local callback=task_manager.task_callback
+    task_manager.task_callback=function(tsk,state)
+        if state==task.completed or state==task.fail then return_home(tsk:get_id()) end
+        return callback(tsk,state)
+    end
+    RegisterScriptCallback("save_state",function(data) data.coopnet_private_followers=followers end)
+    RegisterScriptCallback("load_state",function(data)
+        followers=not level.coop_world_replica() and data.coopnet_private_followers or {}
+        for id,home in pairs(followers) do
+            local obj=alife_object(id)
+            if obj and obj:name()==home.name then level.coop_private_quest_follower(id,true) end
+        end
+    end)
+    printf("* CoopNet personal quest follower hooks installed")
+end

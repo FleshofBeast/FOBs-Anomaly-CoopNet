@@ -67,6 +67,8 @@ class ClientPump {
     std::map<Identity,std::pair<std::uint32_t,SequenceWindow>> vitals_sequences_;
     std::function<void(const InventoryResult&)> inventory_sink_;
     std::function<void(const ActorVitals&)> vitals_sink_;
+    std::function<void(const WorldHit&)> player_hit_sink_;
+    std::map<Identity,std::pair<std::uint32_t,SequenceWindow>> player_hit_sequences_;
     std::function<void(const RespawnResult&)> respawn_sink_;
     std::map<std::uint32_t,RespawnRequest> pending_respawns_;
     std::map<std::uint32_t,DialogueRequest> pending_dialogue_;
@@ -82,6 +84,7 @@ class ClientPump {
     std::function<bool(const WorldBaseline&,const std::vector<std::uint8_t>&)> baseline_sink_;
     std::function<void(const WorldBaseline&,std::uint32_t)> baseline_progress_sink_;
     void clear_baseline() {
+        player_hit_sequences_.clear();
         pending_dialogue_.clear(); dialogue_assembly_.clear();
         pending_respawns_.clear(); respawn_ticks_.clear();
         inventory_view_assembly_.clear(); inventory_views_={}; inventory_view_revision_=0;
@@ -173,6 +176,7 @@ public:
     void set_item_sink(std::function<void(const ItemState&)> sink) { item_sink_=std::move(sink); }
     void set_inventory_sink(std::function<void(const InventoryResult&)> sink) { inventory_sink_=std::move(sink); }
     void set_vitals_sink(std::function<void(const ActorVitals&)> sink) { vitals_sink_=std::move(sink); }
+    void set_player_hit_sink(std::function<void(const WorldHit&)> sink) { player_hit_sink_=std::move(sink); }
     void set_respawn_sink(std::function<void(const RespawnResult&)> sink) { respawn_sink_=std::move(sink); }
     bool respawn_pending() const { return !pending_respawns_.empty(); }
     SendResult send_respawn(const RespawnRequest& request) {
@@ -236,6 +240,13 @@ public:
         const auto result=transport_->send({Message::WorldHit,Channel::Combat,Delivery::ReliableOrdered,hit.sequence,encode_world_hit(hit)});
         if (result!=SendResult::Sent && result!=SendResult::Backpressure) lost();
         return result;
+    }
+    SendResult send_owner_appearance(const ActorAppearance& a) {
+        if(!transport_ || session_.state()!=ClientState::Connected || !level_ready_sent_) return SendResult::Disconnected;
+        const auto* actor=actors_.find(a.entity);
+        if(!valid_appearance(a) || !actor || actor->player!=session_.welcome().player || actor->generation!=a.generation || actor->level!=a.level || assignment_.level!=a.level) return SendResult::Invalid;
+        const auto result=transport_->send({Message::ActorAppearance,Channel::World,Delivery::ReliableOrdered,a.generation,encode_appearance(a)});
+        if(result!=SendResult::Sent && result!=SendResult::Backpressure) lost();return result;
     }
     const ClientSession& session() const { return session_; }
     const ClientRoster* roster() const { return roster_.get(); }
@@ -492,6 +503,15 @@ public:
                 PlayerName name;
                 if(frame.sequence || !decode_player_name(frame.payload,name) || (!names_.count(name.player) && names_.size()>=4)) { lost(); return; }
                 names_[name.player]=std::move(name.name);
+            } else if (frame.message==Message::PlayerHit) {
+                WorldHit hit;
+                if(!decode_world_hit(frame.payload,hit) || hit.sequence!=frame.sequence) {lost();return;}
+                const auto* actor=actors_.find(hit.actor);
+                if(!actor || actor->player!=session_.welcome().player || actor->generation!=hit.generation ||
+                    actor->level!=hit.level || !level_ready_sent_ || assignment_.level!=hit.level) continue;
+                auto& sequence=player_hit_sequences_[hit.actor];
+                if(sequence.first!=hit.generation) sequence={hit.generation,{}};
+                if(sequence.second.accept(hit.sequence) && player_hit_sink_) player_hit_sink_(hit);
             } else if (frame.message==Message::ActorVitals) {
                 ActorVitals vitals;
                 if (!decode_vitals(frame.payload,vitals) || vitals.tick!=frame.sequence) { lost(); return; }

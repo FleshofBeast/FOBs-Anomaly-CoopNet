@@ -14,6 +14,10 @@ struct SHit;
 struct GAME_NEWS_DATA;
 namespace engine_coopnet {
 bool intercept_world_hit(CGameObject* target,const SHit& hit);
+bool intercept_player_hit(CGameObject* target,const SHit& hit);
+bool peek_player_hit(std::uint16_t& object,coopnet::WorldHit& hit);
+void discard_player_hit();
+bool apply_player_hit(std::uint64_t session,const coopnet::WorldHit& hit);
 bool peek_world_hit(coopnet::WorldHit& hit);
 void discard_world_hit();
 bool apply_world_hit(std::uint64_t session,std::uint16_t actor,const coopnet::WorldHit& hit);
@@ -49,10 +53,13 @@ struct NativeWorldPose {
     std::uint16_t object=0xffff;
     std::uint64_t incarnation=0;
     float position[3]{},rotation[3]{},health=0;
-    std::string section,visual;
+    std::string section,visual,name;
     std::vector<coopnet::WorldAnimation> animations;
     std::uint8_t zone_state=255;
     std::uint32_t zone_time=0;
+    std::uint16_t killer=0xffff;
+    coopnet::WorldPhysics physics;
+    std::vector<coopnet::ZoneShape> shapes;
 };
 void queue_npc_catalogue(std::uint64_t session,std::uint32_t level,const std::vector<coopnet::NPCRecord>& records);
 void update_npc_catalogue();
@@ -86,16 +93,28 @@ void exercise_shared_world_probe(double elapsed,unsigned& phase,double& wait,std
 bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& objects);
 bool apply_world_object(std::uint64_t session,std::uint64_t anchor,std::uint64_t incarnation,
     const float* position,const float* rotation,float health,const std::vector<coopnet::WorldAnimation>& animations={},
-    std::uint8_t zone_state=255,std::uint32_t zone_time=0);
+    std::uint8_t zone_state=255,std::uint32_t zone_time=0,std::uint64_t killer=0,bool killer_player=false,const coopnet::WorldPhysics& physics={});
 bool world_level_is_replica();
 // Development migration: retain joined-world identity while restoring local native simulation.
 bool guest_native_world();
+bool restore_personal_quests();
+bool capture_personal_state(std::vector<std::uint8_t>& bytes);
+bool queue_personal_state(const std::vector<std::uint8_t>& bytes);
+void reset_personal_character();
+void set_personal_world_scope(std::uint64_t scope);
+void personal_loot_changed(CGameObject* source);
+void update_personal_loot();
+void exercise_native_acceptance_probe(double elapsed);
+bool native_character_ready();
+bool set_private_quest_follower(std::uint16_t object, bool private_follower);
 bool native_world_requested();
+void set_native_world_policy(bool active);
 bool passive_world_replica();
 void world_object_spawned(CGameObject* object,const CSE_Abstract* source);
 void world_object_destroyed(CGameObject* object);
 bool world_replica_object(const CGameObject* object);
 bool update_world_replica(CObject* object);
+void finalize_world_replica(CObject* object);
 bool schedule_world_replica(ISheduled* object,std::uint32_t elapsed);
 void world_level_stopped();
 }

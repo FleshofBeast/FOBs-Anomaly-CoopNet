@@ -34,7 +34,7 @@ class HostPump {
         std::uint32_t party_revision=0;
         std::uint32_t rules_revision=0;
         std::size_t rules_chunk=0;
-        double elapsed = 0;
+        double elapsed = 0,character_wait=0;
         std::uint32_t level = 0;
         LevelAssignment assignment;
         bool assigned = false;
@@ -86,9 +86,11 @@ class HostPump {
     std::map<Identity,ItemState> items_;
     std::function<InventoryResult(Identity,const InventoryRequest&)> inventory_handler_;
     std::function<void(Identity,const WorldHit&)> hit_handler_;
+    std::function<void(Identity,const ActorAppearance&)> owner_appearance_handler_;
     std::function<DialogueView(Identity,const DialogueRequest&,std::uint32_t)> dialogue_handler_;
     std::function<RespawnResult(Identity,const RespawnRequest&)> respawn_handler_;
     std::function<bool(Identity,const InventoryView&)> character_handler_;
+    std::function<bool()> character_validation_ready_;
     std::function<bool(Identity,Identity)> resume_character_handler_;
     bool character_required_=false;
     std::function<void(const ClientHello&,const Welcome&)> rejection_handler_;
@@ -136,6 +138,9 @@ class HostPump {
     }
     bool receive(Peer& peer) {
         for (unsigned count = 0; count < 32; ++count) {
+            // Keep ordered profile/ready frames queued until native host state
+            // exists. Consuming a profile here would reject a valid faction.
+            if(peer.player && !peer.ready && !peer.rejected && character_validation_ready_ && !character_validation_ready_()) return true;
             Frame frame{};
             if (!peer.transport->receive(frame)) return true;
             if (peer.rejected) continue;
@@ -206,6 +211,15 @@ class HostPump {
                 if (peer.hit_budget<1) continue;
                 peer.hit_budget-=1;
                 if (hit_handler_) hit_handler_(peer.player,hit);
+            }
+            else if (peer.ready && frame.message==Message::ActorAppearance) {
+                ActorAppearance appearance;
+                if(!decode_appearance(frame.payload,appearance) || frame.sequence!=appearance.generation) return false;
+                const auto actor=actors_.find(appearance.entity);
+                if(actor==actors_.end()) continue;
+                if(actor->second.player!=peer.player) return false;
+                if(peer.assigned || peer.level!=appearance.level || actor->second.level!=appearance.level || actor->second.generation!=appearance.generation) continue;
+                if(owner_appearance_handler_) owner_appearance_handler_(peer.player,appearance);
             }
             else if (peer.ready && frame.message == Message::ActorInput) {
                 ActorInput input;
@@ -345,6 +359,7 @@ public:
         return false;
     }
     void set_character_handler(std::function<bool(Identity,const InventoryView&)> handler) { character_handler_=std::move(handler); }
+    void set_character_validation_ready(std::function<bool()> ready) { character_validation_ready_=std::move(ready); }
     void require_character_profile(bool required) { character_required_=required; }
     void set_resume_character_handler(std::function<bool(Identity,Identity)> handler) { resume_character_handler_=std::move(handler); }
     void set_rejection_handler(std::function<void(const ClientHello&,const Welcome&)> handler) { rejection_handler_=std::move(handler); }
@@ -410,6 +425,7 @@ public:
     }
     void set_respawn_handler(std::function<RespawnResult(Identity,const RespawnRequest&)> handler) { respawn_handler_=std::move(handler); }
     void set_world_hit_handler(std::function<void(Identity,const WorldHit&)> handler) { hit_handler_=std::move(handler); }
+    void set_owner_appearance_handler(std::function<void(Identity,const ActorAppearance&)> handler) {owner_appearance_handler_=std::move(handler);}
     void set_inventory_handler(std::function<InventoryResult(Identity,const InventoryRequest&)> handler) {
         inventory_handler_=std::move(handler);
     }
@@ -484,6 +500,14 @@ public:
             if (result!=SendResult::Sent && result!=SendResult::Backpressure) peer.transport->close();
         }
         return true;
+    }
+    bool send_player_hit(Identity player,const WorldHit& hit) {
+        const auto actor=actors_.find(hit.actor);
+        if(!valid_world_hit(hit) || actor==actors_.end() || actor->second.player!=player ||
+            actor->second.generation!=hit.generation || actor->second.level!=hit.level) return false;
+        for(auto& peer:peers_) if(peer.player==player && peer.ready && !peer.assigned && peer.level==hit.level)
+            return queue(peer,{Message::PlayerHit,Channel::Combat,Delivery::ReliableOrdered,hit.sequence,encode_world_hit(hit)});
+        return false;
     }
     // Held controls expire after packet loss; callers apply them on host simulation ticks.
     bool latest_input(Identity player, ActorInput& output) const {
@@ -608,6 +632,8 @@ public:
         for (auto it = peers_.begin(); it != peers_.end(); ) {
             auto& peer = *it;
             peer.elapsed += elapsed;
+            const bool awaiting_character=peer.player && !peer.ready && !peer.rejected && character_validation_ready_ && !character_validation_ready_();
+            if(awaiting_character) {peer.elapsed=0;peer.character_wait+=elapsed;}
             peer.input_age += elapsed;
             peer.hit_budget=(std::min)(128.,peer.hit_budget+elapsed*128.);
             peer.transaction_budget=(std::min)(8.,peer.transaction_budget+elapsed*8.);
@@ -620,6 +646,7 @@ public:
                 if (peer.transfer_time >= 120) failed(peer, TransferFailure::Timeout);
             }
             bool keep = peer.transport->connected() || peer.transport->connecting();
+            if(peer.character_wait>=120) keep=false;
             if (peer.baseline.id && !peer.baseline_received && peer.baseline_time>=120) keep=false;
             if ((!peer.ready && peer.elapsed >= 10) || (peer.rejected && peer.elapsed >= 1)) keep = false;
             if (keep && peer.transport->connected()) {
@@ -703,7 +730,7 @@ public:
         names_.clear();
         for (auto& peer : peers_) peer.transport->close();
         peers_.clear(); actors_.clear(); actor_generations_.clear(); failures_.clear(); session_.stop(); tokens_ = {}; id_ = 0;
-        items_.clear(); inventory_handler_={}; dialogue_handler_={}; character_handler_={}; resume_character_handler_={}; rejection_handler_={}; character_required_=false;
+        items_.clear(); inventory_handler_={}; dialogue_handler_={}; character_handler_={}; character_validation_ready_={}; resume_character_handler_={}; rejection_handler_={}; character_required_=false;
         rules_revision_=0; rules_frames_.clear();
         shared_frames_={}; shared_revision_={};
     }

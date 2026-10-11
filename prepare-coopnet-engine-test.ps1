@@ -1,5 +1,6 @@
-param([switch]$Launch, [switch]$LoadFixture, [switch]$ReplicaProbe, [switch]$MovementProbe, [switch]$ManualControls, [switch]$GameplayProbe, [switch]$WorldProbe, [switch]$PartyProbe, [switch]$WeaponProbe, [switch]$InventoryProbe, [switch]$WorldLootProbe, [switch]$SettingsProbe, [switch]$RespawnProbe, [switch]$SharedWorldProbe, [switch]$ContainerProbe, [switch]$ContainerRecoveryProbe, [switch]$DialogueProbe, [switch]$NameplateProbe, [switch]$FactionProbe, [switch]$MutantProbe, [switch]$StarterProbe, [switch]$NativeWorldProbe, [switch]$SharedHitProbe, [string]$TestDirectory)
+param([switch]$Launch, [switch]$LoadFixture, [switch]$ReplicaProbe, [switch]$MovementProbe, [switch]$ManualControls, [switch]$GameplayProbe, [switch]$WorldProbe, [switch]$PartyProbe, [switch]$WeaponProbe, [switch]$InventoryProbe, [switch]$WorldLootProbe, [switch]$SettingsProbe, [switch]$RespawnProbe, [switch]$SharedWorldProbe, [switch]$ContainerProbe, [switch]$ContainerRecoveryProbe, [switch]$DialogueProbe, [switch]$NameplateProbe, [switch]$FactionProbe, [switch]$MutantProbe, [switch]$StarterProbe, [switch]$FreshQuestProbe, [switch]$NativeWorldProbe, [switch]$NativeDefaultProbe, [switch]$NativeAcceptanceProbe, [switch]$NativeVisualProbe, [switch]$NaturalCombatProbe, [switch]$LiveCombatProbe, [switch]$SharedHitProbe, [string]$TestDirectory)
 $ErrorActionPreference = 'Stop'
+if ($LiveCombatProbe) { $LoadFixture=$true; $ReplicaProbe=$true; $NativeWorldProbe=$true; $NativeDefaultProbe=$true; $NaturalCombatProbe=$true; $NativeVisualProbe=$true }
 if ($PartyProbe) { $WorldProbe=$true }
 if ($SettingsProbe) { $WorldProbe=$true }
 if ($RespawnProbe) { $WorldProbe=$true }
@@ -48,15 +49,32 @@ foreach ($role in @('host', 'guest')) {
     foreach ($line in $fsTemplate) {
         if ($line -match '^\$app_data_root\$') {
             $fs += '$app_data_root$ = true | false | ' + $data + '\'
+        } elseif ($NativeWorldProbe -and $line -match '^\$game_scripts\$') {
+            $scripts = Join-Path $root 'scripts'
+            New-Item -ItemType Directory -Force $scripts | Out-Null
+            Copy-Item "$PSScriptRoot/_build/coopnet-script-audit/scripts/*.script" $scripts -Force
+            Copy-Item "$client/gamedata/scripts/*.script" $scripts -Force
+            Copy-Item "$PSScriptRoot/gamedata/scripts/*.script" $scripts -Force
+            # Both clients may save options during startup. Keep those writes
+            # out of the shared installed game's axr_options.ltx.
+            $mainScript=Join-Path $scripts 'axr_main.script'
+            $mainText=[IO.File]::ReadAllText($mainScript)
+            $configLine='config = ini_file_ex("axr_options.ltx",true)'
+            if(!$mainText.Contains($configLine)){throw 'Fixture options initialization changed; cannot isolate its writes.'}
+            $mainText=$mainText.Replace($configLine,$configLine+"`nconfig.fname = getFS():update_path('`$app_data_root`$', 'axr_options.ltx')")
+            [IO.File]::WriteAllText($mainScript,$mainText)
+            Copy-Item "$client/gamedata/configs/axr_options.ltx" "$data/axr_options.ltx" -Force
+            $fs += '$game_scripts$ = true | false | ' + $scripts + '\'
         } else { $fs += $line }
     }
     $fs | Set-Content "$root\fsgame.ltx" -Encoding ascii
     $startup = if ($role -eq 'host') { 'coop_host 27889 1 1 1' } else { 'coop_join 127.0.0.1:27889 2 1 1' }
     # Hidden probe processes must render without desktop focus; only these copied configs change.
     @($userTemplate) + @('rs_screenmode windowed','vid_mode 1280x720',
-        'snd_volume_eff 0','snd_volume_music 0','r__framelimit 30','g_always_active on',$startup,'coop_status') |
+        'snd_volume_eff 0','snd_volume_music 0','r__framelimit 30','g_always_active on','keypress_on_start off',$startup,'coop_status') |
         Set-Content "$data\user.ltx" -Encoding ascii
     if ($ReplicaProbe) { Add-Content "$data\user.ltx" 'coop_replica_probe' -Encoding ascii }
+    if ($LiveCombatProbe) { Add-Content "$data\user.ltx" 'coop_world_probe' -Encoding ascii }
     if ($MovementProbe) {
         $controls = if ($ManualControls) { 'coop_movement_probe' } else { 'coop_movement_probe auto' }
         Add-Content "$data\user.ltx" $controls -Encoding ascii
@@ -66,14 +84,14 @@ foreach ($role in @('host', 'guest')) {
     if ($DialogueProbe -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_dialogue_probe' -Encoding ascii }
     if ($WorldLootProbe) { Add-Content "$data\user.ltx" 'coop_loot_probe' -Encoding ascii }
     if ($RespawnProbe) { Add-Content "$data\user.ltx" 'coop_respawn_probe' -Encoding ascii }
-    if ($SharedWorldProbe -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_shared_probe' -Encoding ascii }
+    if (($SharedWorldProbe -or $LiveCombatProbe) -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_shared_probe' -Encoding ascii }
     if ($SettingsProbe) { Add-Content "$data\user.ltx" 'coop_settings_probe' -Encoding ascii }
     if ($WorldProbe) { Add-Content "$data\user.ltx" 'coop_world_probe' -Encoding ascii }
     if ($WeaponProbe) { Add-Content "$data\user.ltx" 'coop_weapon_probe' -Encoding ascii }
     if ($InventoryProbe -and $role -eq 'guest') { Add-Content "$data\user.ltx" 'coop_inventory_probe' -Encoding ascii }
     if ($StarterProbe -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_starter_probe' -Encoding ascii }
     if ($PartyProbe -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_party_probe' -Encoding ascii }
-    if ($LoadFixture -and ($role -eq 'host' -or $ReplicaProbe) -and !($WorldProbe -and $role -eq 'guest')) {
+    if ($LoadFixture -and ($role -eq 'host' -or $ReplicaProbe) -and !($WorldProbe -and $role -eq 'guest' -and (!$NativeWorldProbe -or $FreshQuestProbe))) {
         $fixture = Join-Path $client 'appdata\savedgames\player - autosave.scop'
         if (!(Test-Path $fixture)) { throw 'The disposable gameplay test fixture source save is missing.' }
         $saves = Join-Path $data 'savedgames'
@@ -90,8 +108,13 @@ if ($Launch) {
     foreach ($role in @('host', 'guest')) {
         $root = Join-Path $testRoot $role
         $probeArguments=@('-silent_error_mode','-noprefetch','-coop_engine_fixture')
-        if ($NativeWorldProbe) { $probeArguments+='-coop_native_world' }
+        if ($NativeWorldProbe -and !$NativeDefaultProbe) { $probeArguments+='-coop_native_world' }
+        if (!$NativeWorldProbe) { $probeArguments+='-coop_passive_world' }
         if ($SharedHitProbe) { $probeArguments+='-coop_shared_hit_probe' }
+        if ($NativeAcceptanceProbe) { $probeArguments+='-coop_native_acceptance_probe' }
+        if ($NativeVisualProbe) { $probeArguments+='-coop_native_visual_probe' }
+        if ($NaturalCombatProbe) { $probeArguments+='-coop_native_combat_probe' }
+        if ($LiveCombatProbe) { $probeArguments+='-coop_live_combat_probe' }
         if ($RespawnProbe) { $probeArguments+='-coop_respawn_spectator_probe' }
         if ($FactionProbe -and $role -eq 'host') { $probeArguments+='-coop_faction_probe' }
         if ($MutantProbe -and $role -eq 'host') { $probeArguments+='-coop_mutant_probe' }

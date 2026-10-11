@@ -6,6 +6,7 @@
 #include "ParticlesObject.h"
 #include "Level.h"
 #include "../CoopNet/EngineWorldBridge.h"
+#include "../CoopNet/EngineActorBridge.h"
 #include "HUDManager.h"
 #include "xrServer.h"
 #include "NET_Queue.h"
@@ -759,6 +760,9 @@ void CLevel::ProcessGameEvents()
 					u16 obj_id = GetSpawnInfo(P, parent_id, section);
 
 					static auto isValidToPrefetch = [](u16 parent_id, shared_str& section, u16 obj_id, NET_Packet& P) {
+						// Session inventory belongs to native actors outside ALife. The
+						// deferred spawn path requires an ALife parent and would discard it.
+						if (engine_coopnet::is_session_item(obj_id)) return false;
 						if (pSettings->line_exist("spawn_antifreeze_ignore", section))
 						{
 							return false;

@@ -31,6 +31,13 @@ int main() {
     require(client.send_world_hit(h)==SendResult::Disconnected);
     require(host.assign_level(player,10,1000)); host.update(0); client.update(0);
     require(client.acknowledge_level(10)); host.update(0); client.update(0);
+    unsigned received=0;client.set_player_hit_sink([&](const WorldHit& hit){require(hit.actor==20);++received;});
+    require(host.send_player_hit(player,h));host.update(0);client.update(0);require(received==1);
+    require(host.send_player_hit(player,h));host.update(0);client.update(0);require(received==1);
+    auto wrong=h;wrong.actor=21;require(!host.send_player_hit(player,wrong));
+    wrong=h;wrong.generation=2;require(!host.send_player_hit(player,wrong));
+    h.sequence=0;require(host.send_player_hit(player,h));host.update(0);client.update(0);require(received==2);
+    h.sequence=0xfffffffeu;
     require(client.send_world_hit(h)==SendResult::Sent); host.update(0); require(hits==1);
     require(client.send_world_hit(h)==SendResult::Sent); host.update(0); require(hits==1);
     h.sequence=0; require(client.send_world_hit(h)==SendResult::Sent); host.update(0); require(hits==2);

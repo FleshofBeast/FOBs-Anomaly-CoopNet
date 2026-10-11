@@ -17,8 +17,13 @@ struct ActorInput {
     std::uint32_t motion_epoch=0;
     std::uint16_t movement=0;
     std::array<float,3> position{},velocity{};
+    bool owner_condition=false;
+    float health=1,power=1,radiation=0;
 };
 inline bool valid_input(const ActorInput& value) {
+    if (!std::isfinite(value.health) || value.health< -1 || value.health>1 ||
+        !std::isfinite(value.power) || value.power< -1 || value.power>1 ||
+        !std::isfinite(value.radiation) || value.radiation<0 || value.radiation>1 || (value.owner_condition && !value.owner_pose)) return false;
     for (float coordinate:value.position) if (!std::isfinite(coordinate) || std::abs(coordinate)>1000000.f) return false;
     for (float speed:value.velocity) if (!std::isfinite(speed) || std::abs(speed)>1000.f) return false;
     return value.entity && value.generation && value.level && !(value.buttons & ~input_buttons) &&
@@ -38,6 +43,8 @@ inline std::vector<std::uint8_t> encode_input(const ActorInput& value) {
     for (const auto& vector:{value.position,value.velocity}) for (const auto number:vector) {
         std::uint32_t bits; std::memcpy(&bits,&number,4); writer.integer(bits,4);
     }
+    writer.integer(value.owner_condition ? 1 : 0,1);
+    for(float number:{value.health,value.power,value.radiation}) {std::uint32_t bits;std::memcpy(&bits,&number,4);writer.integer(bits,4);}
     return writer.bytes;
 }
 inline bool decode_input(const std::vector<std::uint8_t>& bytes, ActorInput& output) {
@@ -58,6 +65,11 @@ inline bool decode_input(const std::vector<std::uint8_t>& bytes, ActorInput& out
     for (auto* vector:{&value.position,&value.velocity}) for (auto& number:*vector) {
         std::uint64_t encoded; if (!reader.integer(encoded,4)) return false;
         const auto bits=static_cast<std::uint32_t>(encoded); std::memcpy(&number,&bits,4);
+    }
+    if(!reader.integer(owner,1) || owner>1) return false; value.owner_condition=owner!=0;
+    for(auto* number:{&value.health,&value.power,&value.radiation}) {
+        std::uint64_t encoded;if(!reader.integer(encoded,4)) return false;
+        const auto bits=static_cast<std::uint32_t>(encoded);std::memcpy(number,&bits,4);
     }
     if (reader.remaining() || !valid_input(value)) return false;
     output = value; return true;

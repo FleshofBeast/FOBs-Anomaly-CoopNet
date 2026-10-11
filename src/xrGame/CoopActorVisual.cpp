@@ -32,11 +32,23 @@ public:
     coopnet::ActorAppearance appearance;
     std::atomic<std::uint32_t> weapon_renders{0};
     bool weapon_attached=false;
+    struct AimBone {float pitch=0,factor=0;};
+    AimBone aim_bones[3]{{0,.2f},{0,.7f},{0,.1f}};
+    static void aim_callback(CBoneInstance* bone) {
+        const auto* aim=static_cast<const AimBone*>(bone->callback_param());
+        Fmatrix rotation;rotation.setXYZ(-angle_normalize_signed(aim->pitch)*aim->factor,0,0);
+        const Fvector position=bone->mTransform.c;
+        bone->mTransform.mulA_43(rotation);bone->mTransform.c=position;
+    }
     unsigned probe_shots=0;
     RemoteActorVisual(const RemoteActorPose& pose) : ISpatial(g_SpatialSpace), generation(pose.generation), model(pose.appearance.body.empty()?pose.visual:pose.appearance.body.c_str()) {
         renderable.visual = Render->model_Create(model.c_str());
         spatial.type = STYPE_RENDERABLE;
-        if (auto* skeleton = renderable.visual->dcast_PKinematics()) skeleton->spatialParent = this;
+        if (auto* skeleton = renderable.visual->dcast_PKinematics()) {
+            skeleton->spatialParent = this;
+            const char* names[]={"bip01_spine1","bip01_spine2","bip01_head"};
+            for(unsigned i=0;i<3;++i) {const auto bone=skeleton->LL_BoneID(names[i]);if(bone!=BI_NONE)skeleton->LL_GetBoneInstance(bone).set_callback(bctCustom,aim_callback,&aim_bones[i]);}
+        }
         weapon_transform.identity(); legs.invalidate(); torso.invalidate(); head.invalidate();
         apply(pose); spatial_register();
     }
@@ -97,7 +109,8 @@ public:
             visibility(renderable.visual,appearance.hidden_body);visibility(weapon,appearance.hidden_weapon);
             Msg("* CoopNet remote appearance applied: body %s weapon %s animation %u hidden attachments %u",model.c_str(),appearance.weapon.c_str(),appearance.animation,static_cast<unsigned>(appearance.hidden_weapon.size()));
         }
-        renderable.xform.setHPB(-pose.rotation[1], pose.rotation[0], pose.rotation[2]);
+        for(auto& bone:aim_bones) bone.pitch=pose.rotation[0];
+        renderable.xform.setHPB(-pose.rotation[1], 0, pose.rotation[2]);
         renderable.xform.c.set(pose.position[0],pose.position[1],pose.position[2]);
         if(strstr(GetCommandLineA(),"-coop_appearance_probe") && g_actor) {
             Fvector target=renderable.xform.c;target.y+=1.2f;
@@ -108,7 +121,7 @@ public:
             }
         }
         if (auto* animated = renderable.visual->dcast_PKinematicsAnimated()) animate(*animated, pose.movement);
-        if (auto* skeleton = renderable.visual->dcast_PKinematics()) skeleton->CalculateBones(TRUE);
+        if (auto* skeleton = renderable.visual->dcast_PKinematics()) {skeleton->CalculateBones_Invalidate();skeleton->CalculateBones(TRUE);}
         weapon_attached=false;
         if(weapon) {
             auto* k=renderable.visual->dcast_PKinematics();

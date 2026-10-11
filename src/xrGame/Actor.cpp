@@ -1,6 +1,8 @@
 #include "pch_script.h"
 #include "Actor_Flags.h"
 #include "../CoopNet/EngineActorBridge.h"
+#include "../CoopNet/EngineWorldBridge.h"
+#include "CustomZone.h"
 #include "../xrEngine/CoopNetRuntime.h"
 #include "hudmanager.h"
 #ifdef DEBUG
@@ -556,6 +558,10 @@ struct playing_pred
 
 void CActor::Hit(SHit* pHDS)
 {
+    if (engine_coopnet::intercept_player_hit(this,*pHDS)) return;
+    if (this==g_actor && engine_coopnet::guest_native_world() && strstr(Core.Params,"-coop_native_acceptance_probe") &&
+        smart_cast<CCustomZone*>(pHDS->who) && pHDS->hit_type==ALife::eHitTypeShock)
+        Msg("* CoopNet native electric collision: power %.3f",pHDS->power);
     if (m_coopnet_downed) return;
     if (m_coopnet_guest && strstr(Core.Params,"-coop_faction_probe") && pHDS->who && pHDS->hit_type==ALife::eHitTypeFireWound)
         Msg("* CoopNet faction probe: native NPC bullet hit guest %u attacker %u power %.3f",ID(),pHDS->who->ID(),pHDS->power);
@@ -876,7 +882,7 @@ extern BOOL firstPersonDeath;
 
 void CActor::Die(CObject* who)
 {
-    if (this==g_actor && engine_coopnet::guest_settings_locked()) { if (GetfHealth()<=0) conditions().SetHealth(.001f); return; }
+    if (this==g_actor && engine_coopnet::guest_settings_locked() && !engine_coopnet::guest_native_world()) { if (GetfHealth()<=0) conditions().SetHealth(.001f); return; }
     if (engine_coopnet::shared_world_active() && (this==g_actor || m_coopnet_guest)) { coopnet_down(); return; }
 #ifdef HOLDERCUSTOM_NEW
 	use_HolderEx(NULL, true);
@@ -2378,6 +2384,7 @@ bool canRenderLegs(CActor* actor, CHolderCustom* m_holder) noexcept
 
 void CActor::renderable_Render()
 {
+    if (m_coopnet_guest && engine_coopnet::guest_visual_owned(ID())) return;
 	if (m_coopnet_guest)
 	{
 		// A remote player always renders a full body for the host camera.

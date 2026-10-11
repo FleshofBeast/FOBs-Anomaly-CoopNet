@@ -39,3 +39,6 @@ compressor/mod/
 # emacs temp file
 \#*\#
 *~
+
+# Local upstream source used for implementation research
+_reference/

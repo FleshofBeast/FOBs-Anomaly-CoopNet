@@ -77,6 +77,9 @@ public:
 
 	void save_task(IWriter& stream);
 	void load_task(IReader& stream);
+	void save_personal_task(IWriter& stream);
+	void load_personal_task(IReader& stream);
+	void remap_personal_target(u16 object);
 
 
 	shared_str m_ID;

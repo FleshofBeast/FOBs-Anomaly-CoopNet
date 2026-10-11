@@ -7,6 +7,16 @@ void check(bool value,int line) { if (!value) { std::cerr<<"Shared world failed 
 int main() {
     NPCRecord npc{{100,9,{1,2,3},{},1},"dog_weak","monsters/dog/dog"};
     std::vector<NPCRecord> decoded; auto bytes=encode_npcs({npc}); require(decode_npcs(bytes,decoded));
+    NPCRecord zone; zone.pose={101,10,{1,2,3},{},0}; zone.pose.zone_state=2; zone.pose.zone_time=450;
+    zone.section="zone_mosquito_bald_weak"; ZoneShape sphere; sphere.values[3]=2.5f; zone.shapes.push_back(sphere);
+    const auto zone_bytes=encode_npcs({zone}); require(decode_npcs(zone_bytes,decoded));
+    require(decoded[0].pose.zone_state==2 && decoded[0].pose.zone_time==450 && decoded[0].shapes[0].values[3]==2.5f);
+    for(std::size_t i=0;i<zone_bytes.size();++i) require(!decode_npcs({zone_bytes.begin(),zone_bytes.begin()+i},decoded));
+    zone.shapes[0].values[3]=0; require(!valid_npc(zone)); zone.shapes[0]=sphere;
+    zone.pose.zone_state=255; zone.pose.zone_time=0; require(!valid_npc(zone)); zone.pose.zone_state=2;
+    ZoneShape box; box.type=1; box.values[0]=box.values[5]=box.values[10]=box.values[15]=1; box.values[12]=3;
+    zone.shapes={box}; require(decode_npcs(encode_npcs({zone}),decoded) && decoded[0].shapes[0].values[12]==3);
+    zone.shapes[0].values[0]=0; require(!valid_npc(zone)); zone.shapes.assign(65,sphere); require(!valid_npc(zone));
     for (std::size_t i=0;i<bytes.size();++i) require(!decode_npcs({bytes.begin(),bytes.begin()+i},decoded));
     auto extra=bytes; extra.push_back(0); require(!decode_npcs(extra,decoded));
     npc.visual="../bad"; require(!valid_npc(npc)); npc.visual="monsters/dog/dog";

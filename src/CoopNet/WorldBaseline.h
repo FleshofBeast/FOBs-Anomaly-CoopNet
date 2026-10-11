@@ -10,6 +10,7 @@ struct WorldBaseline {
     Identity id=0;
     std::uint32_t level=0, size=0;
     BaselineDigest digest{};
+    Identity scope=0;
 };
 struct WorldChunk {
     Identity baseline=0;
@@ -20,12 +21,13 @@ inline bool valid_baseline(const WorldBaseline& value) {
     return value.id && value.level && value.size>=12 && value.size<=max_baseline_bytes;
 }
 inline bool same_baseline(const WorldBaseline& a,const WorldBaseline& b) {
-    return a.id==b.id && a.level==b.level && a.size==b.size && a.digest==b.digest;
+    return a.id==b.id && a.level==b.level && a.size==b.size && a.digest==b.digest && a.scope==b.scope;
 }
 inline std::vector<std::uint8_t> encode_baseline(const WorldBaseline& value) {
     if (!valid_baseline(value)) throw std::invalid_argument("Invalid world baseline");
     Writer writer; writer.integer(value.id,8); writer.integer(value.level,4); writer.integer(value.size,4);
     for (const auto byte:value.digest) writer.integer(byte,1);
+    writer.integer(value.scope,8);
     return writer.bytes;
 }
 inline bool decode_baseline(const std::vector<std::uint8_t>& bytes,WorldBaseline& output) {
@@ -33,6 +35,7 @@ inline bool decode_baseline(const std::vector<std::uint8_t>& bytes,WorldBaseline
     if (!reader.integer(id,8) || !reader.integer(level,4) || !reader.integer(size,4)) return false;
     value.id=id; value.level=static_cast<std::uint32_t>(level); value.size=static_cast<std::uint32_t>(size);
     for (auto& entry:value.digest) { if (!reader.integer(byte,1)) return false; entry=static_cast<std::uint8_t>(byte); }
+    if (!reader.integer(value.scope,8)) return false;
     if (reader.remaining() || !valid_baseline(value)) return false;
     output=value; return true;
 }

@@ -9,6 +9,7 @@
 #include "ui/UIActorMenu.h"
 #include "uigamecustom.h"
 #include "inventory_item.h"
+#include "../CoopNet/EngineWorldBridge.h"
 
 CInventoryBox::CInventoryBox()
 {
@@ -36,6 +37,7 @@ void CInventoryBox::OnEvent(NET_Packet& P, u16 type)
 			VERIFY(itm);
 			m_items.push_back(id);
 			itm->H_SetParent(this);
+            if (m_in_use) engine_coopnet::personal_loot_changed(this);
 			itm->setVisible(FALSE);
 			itm->setEnabled(FALSE);
 
@@ -68,6 +70,7 @@ void CInventoryBox::OnEvent(NET_Packet& P, u16 type)
 			bool dont_create_shell = (type == GE_TRADE_SELL) || just_before_destroy;
 
 			itm->H_SetParent(NULL, dont_create_shell);
+            if (m_in_use) engine_coopnet::personal_loot_changed(this);
 
 			if (m_in_use)
 			{

@@ -43,12 +43,14 @@ bool backup_character_path(const char* path,const std::string& name) {
 }
 bool read_character_save(std::uint64_t character,coopnet::InventoryView& inventory) {
     CharacterSave saved; if(find_character_path(character,&saved).empty()) return false;
+    if (!queue_personal_state(saved.personal)) return false;
     inventory=std::move(saved.inventory);inventory.actor=1;inventory.generation=inventory.level=inventory.revision=1;inventory.has_condition=true;inventory.health=saved.condition.health;inventory.power=saved.condition.power;inventory.radiation=saved.condition.radiation;
     Msg("* CoopNet saved character loaded: %s items %u rubles %u reputation %d",saved.name.c_str(),static_cast<unsigned>(inventory.items.size()),inventory.money,inventory.progress.reputation);
     return true;
 }
 bool write_character_save(std::uint64_t character,const std::string& name,const coopnet::InventoryView& inventory,const ActorConditionState& condition) {
     CharacterSave save{character,name,condition,inventory};
+    if (!capture_personal_state(save.personal)) return false;
     save.inventory.actor=1;save.inventory.generation=save.inventory.level=save.inventory.revision=1;save.inventory.npc_disposition.clear();
     const auto active=save.inventory.active;save.inventory.active=0;
     for(std::size_t i=0;i<save.inventory.items.size();++i) {auto& item=save.inventory.items[i];if(item.item==active) save.inventory.active=i+1;item.item=i+1;item.revision=1;}

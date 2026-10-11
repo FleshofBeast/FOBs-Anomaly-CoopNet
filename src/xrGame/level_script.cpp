@@ -7,6 +7,7 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #include "pch_script.h"
+#include "../CoopNet/EngineWorldBridge.h"
 #include "level.h"
 #include "../xrEngine/CoopNetRuntime.h"
 #include "actor.h"
@@ -2670,6 +2671,9 @@ void CLevel::script_register(lua_State* L)
 			def("vertex_id", &vertex_id),
 			def("get_nearby_vertices", &get_nearby_vertices),
 
+			def("coop_native_world", &engine_coopnet::native_world_requested),
+			def("coop_world_replica", &engine_coopnet::world_level_is_replica),
+			def("coop_private_quest_follower", &engine_coopnet::set_private_quest_follower),
 			def("game_id", &GameID),
 			def("ray_pick", &ray_pick),
 

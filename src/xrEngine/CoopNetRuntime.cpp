@@ -108,6 +108,8 @@ struct Session {
     coopnet::Mode mode = coopnet::Mode::Offline;
     coopnet::ClientState last_client_state = coopnet::ClientState::Offline;
     bool saved_resume_attempt=false;
+    coopnet::InventoryView selected_join_character;
+    bool has_selected_join_character=false;
     std::uint32_t saved_join_generation=0;
     std::uint32_t world_rules_revision=0;
     std::vector<std::uint8_t> world_rules_signature;
@@ -163,6 +165,9 @@ struct Session {
     coopnet::TickClock ticks;
     std::string host_visual;
     double appearance_wait=0;
+    std::map<coopnet::Identity,coopnet::ActorAppearance> owner_appearances;
+    std::vector<std::uint8_t> owner_appearance_signature;
+    std::deque<coopnet::WorldHit> incoming_player_hits;
     std::set<coopnet::Identity> presented;
     bool replica_probe = false;
     bool movement_probe = false;
@@ -437,7 +442,7 @@ void publish_world(Session& current) {
     std::uint32_t level=0; std::vector<NativeWorldPose> objects;
     if (!capture_world_objects(level,objects)) return;
     if (current.zone_level!=level) { current.zone_states.clear(); current.zone_level=level; }
-    coopnet::WorldState state; state.level=level; state.tick=current.tick;
+    coopnet::WorldState state; state.level=level; state.tick=current.tick;std::size_t wire_size=10;
     for (const auto& native:objects) {
         if (native.zone_state!=255) {
             const auto value=std::make_pair(native.incarnation,native.zone_state);
@@ -451,10 +456,22 @@ void publish_world(Session& current) {
         coopnet::WorldPose pose; pose.anchor=coopnet::world_anchor(current.host.identity(),native.object);
         pose.incarnation=native.incarnation; pose.health=native.health;
         pose.animations=native.animations;
+        if(!native.physics.elements.empty()) {
+            const bool active=std::any_of(native.physics.elements.begin(),native.physics.elements.end(),[](const coopnet::WorldPhysicsElement& body){return body.enabled;});
+            if((active && current.tick%3==0) || current.tick%30==0) pose.physics=native.physics;
+        }
         pose.zone_state=native.zone_state; pose.zone_time=native.zone_time;
+        if(native.killer!=0xffff) {
+            pose.killer=coopnet::world_anchor(current.host.identity(),native.killer);
+            LocalActorPose local;if(capture_local_actor(local) && local.object==native.killer) {pose.killer=1;pose.killer_player=true;}
+            for(const auto& guest:current.guests) if(guest.second.object==native.killer) {pose.killer=guest.first;pose.killer_player=true;}
+        }
         for (unsigned axis=0;axis<3;++axis) { pose.position[axis]=native.position[axis]; pose.rotation[axis]=native.rotation[axis]; }
-        state.objects.push_back(pose);
-        if (state.objects.size()==128) { current.host.publish_world_state(state); state.objects.clear(); }
+        const auto bytes=coopnet::world_pose_wire_size(pose);
+        if(!state.objects.empty() && (state.objects.size()==128 || wire_size+bytes>coopnet::max_payload-16)) {
+            current.host.publish_world_state(state);state.objects.clear();wire_size=10;
+        }
+        wire_size+=bytes;state.objects.push_back(std::move(pose));
     }
     if (!state.objects.empty()) current.host.publish_world_state(state);
     if (!objects.empty() && ++current.world_updates==1)
@@ -467,11 +484,18 @@ void publish_shared_world(Session& current,double elapsed) {
     if (level!=current.shared_level) { current.shared_signature={}; current.shared_level=level; }
     std::vector<coopnet::NPCRecord> records,signature;
     for (const auto& native:objects) {
-        if (native.zone_state!=255) continue;
-        coopnet::NPCRecord n; n.section=native.section; n.visual=native.visual;
+        coopnet::NPCRecord n; n.section=native.section; n.visual=native.visual;n.name=native.name;
+        n.pose.zone_state=native.zone_state; n.pose.zone_time=native.zone_time; n.shapes=native.shapes;
         n.pose.anchor=coopnet::world_anchor(current.host.identity(),native.object); n.pose.incarnation=native.incarnation; n.pose.health=native.health;
+        if(native.killer!=0xffff) {
+            n.pose.killer=coopnet::world_anchor(current.host.identity(),native.killer);
+            LocalActorPose local;if(capture_local_actor(local) && local.object==native.killer) {n.pose.killer=1;n.pose.killer_player=true;}
+            for(const auto& guest:current.guests) if(guest.second.object==native.killer) {n.pose.killer=guest.first;n.pose.killer_player=true;}
+        }
         for (unsigned axis=0;axis<3;++axis) { n.pose.position[axis]=native.position[axis]; n.pose.rotation[axis]=native.rotation[axis]; }
-        records.push_back(n); n.pose.position={}; n.pose.rotation={}; n.pose.health=n.pose.health>0 ? 1.f : 0.f; signature.push_back(n);
+        records.push_back(n); if(n.pose.zone_state==255) { n.pose.position={}; n.pose.rotation={}; n.pose.health=n.pose.health>0 ? 1.f : 0.f; }
+        else { n.pose.zone_state=0; n.pose.zone_time=0; }
+        signature.push_back(n);
     }
     const auto npc_signature=coopnet::encode_npcs(signature);
     if (npc_signature!=current.shared_signature[0] && current.host.publish_shared_world(coopnet::SharedKind::NPC,level,current.shared_revision[0]+1,coopnet::encode_npcs(records))) {
@@ -511,7 +535,7 @@ void send_world_baselines(Session& current) {
         const auto id=random_identity(); const auto name=baseline_name(id);
         auto bytes=std::make_shared<std::vector<std::uint8_t>>(); std::uint32_t level=0;
         if (!capture_world_baseline(name.c_str(),level,*bytes)) throw std::runtime_error("Canonical host snapshot failed");
-        const coopnet::WorldBaseline manifest{id,level,static_cast<std::uint32_t>(bytes->size()),baseline_digest(*bytes)};
+        const coopnet::WorldBaseline manifest{id,level,static_cast<std::uint32_t>(bytes->size()),baseline_digest(*bytes),current.save_scope};
         if (!current.host.send_baseline(player.id,manifest,bytes)) throw std::runtime_error("Canonical host snapshot transfer failed");
         current.world_sent[player.id]=binding;
         Msg("* CoopNet canonical baseline queued: player %llu id %llu bytes %u",player.id,id,manifest.size);
@@ -696,6 +720,7 @@ void capture_host(Session& current, double elapsed) {
             for (unsigned byte=0;byte<8;++byte) { current.save_scope^=(value>>(8*byte))&255; current.save_scope*=1099511628211ull; }
         if (!current.save_scope) current.save_scope=1;
     }
+    set_personal_world_scope(current.save_scope);
     if (!current.host_actor) current.host_actor = current.entities.create();
     previous = current.entities.find(current.host_actor);
     if (!previous->active) {
@@ -719,6 +744,8 @@ void capture_host(Session& current, double elapsed) {
         snapshot.position[axis] = pose.position[axis]; snapshot.velocity[axis] = pose.velocity[axis];
         snapshot.rotation[axis] = pose.rotation[axis];
     }
+    LocalActorControls aiming;
+    if (capture_local_controls(aiming) && aiming.incarnation==pose.incarnation) snapshot.rotation[0]=aiming.pitch;
     if (!current.host.publish_snapshot(snapshot)) throw std::runtime_error("Invalid engine actor snapshot");
     ActorConditionState condition;
     if (capture_actor_condition(pose.object,condition)) current.host.publish_vitals({snapshot.entity,snapshot.generation,pose.level,current.tick,condition.health,condition.power,condition.radiation});
@@ -872,14 +899,20 @@ void capture_guests(Session& current) {
         if (!capture_guest_actor(guest.object,pose)) continue;
         if (!guest.generation) {
             load_guest_save(current,player.character);
+            const bool personal_join=native_world_requested() && current.join_characters.count(player.character);
             const auto saved=current.guest_conditions.find(player.character);
-            if (saved!=current.guest_conditions.end()) {
+            if (!personal_join && saved!=current.guest_conditions.end()) {
                 if (!apply_guest_condition(guest.object,saved->second)) throw std::runtime_error("Guest condition restoration failed");
                 Msg("* CoopNet guest condition restored: character %llu health %.3f power %.3f radiation %.3f",
                     player.character,saved->second.health,saved->second.power,saved->second.radiation);
             }
             const auto inventory=current.guest_inventory.find(player.character);
-            if (inventory!=current.guest_inventory.end()) {
+            if (personal_join) {
+                const auto& selected=current.join_characters.at(player.character);
+                if (!import_join_character(guest.object,selected)) throw std::runtime_error("Personal character import failed");
+                Msg("* CoopNet personal reconnect profile takes precedence: character %llu items %u",player.character,static_cast<unsigned>(selected.items.size()));
+                current.join_characters.erase(player.character);
+            } else if (inventory!=current.guest_inventory.end()) {
                 // Upgrade journals written before faction transfer from the selected character.
                 if (inventory->second.community.empty() && current.join_characters.count(player.character))
                     inventory->second.community=current.join_characters.at(player.character).community;
@@ -979,6 +1012,8 @@ void capture_guests(Session& current) {
             owned.position=input.position; owned.velocity=input.velocity; owned.movement=input.movement;
             owned.rotation={input.pitch,input.yaw,0};
             if (guest.owner_motion.push(owned)) guest.owner_sequence=input.sequence;
+            if (native_world_requested() && input.owner_condition)
+                apply_guest_condition(guest.object,{input.health,input.power,input.radiation});
         }
         coopnet::ActorSnapshot owned;
         if (!current.party_loading && !(current.party_probe && current.party_probe_phase>0) && guest.owner_motion.sample(current.server_us,owned,50000)) {
@@ -1011,6 +1046,7 @@ void capture_guests(Session& current) {
             snapshot.position[0]+=20.f; guest.echoed_error_probe=true;
             Msg("* CoopNet owner movement probe: perturbed echoed position by 20 metres");
         }
+        if (active) snapshot.rotation[0]=input.pitch;
         if (!current.host.publish_snapshot(snapshot)) throw std::runtime_error("Invalid native guest snapshot");
         if (current.tick%10==0) {
             std::vector<NativeInventoryViewItem> native_items; std::uint16_t active=0xffff;
@@ -1117,6 +1153,12 @@ void send_client_controls(Session& current, double elapsed) {
     coopnet::ActorInput input{owned.entity,owned.generation,owned.level,current.input_sequence,
         controls.buttons,controls.yaw,controls.pitch};
     input.owner_pose=true; input.motion_epoch=current.local_motion_epoch;
+    if (guest_native_world()) {
+        ActorConditionState condition;
+        if (capture_actor_condition(local.object,condition)) {
+            input.owner_condition=true;input.health=condition.health;input.power=condition.power;input.radiation=condition.radiation;
+        }
+    }
     input.movement=local.movement;
     for (unsigned axis=0;axis<3;++axis) { input.position[axis]=local.position[axis]; input.velocity[axis]=local.velocity[axis]; }
     if (current.automated_controls) {
@@ -1140,7 +1182,7 @@ void send_client_controls(Session& current, double elapsed) {
         }
     }
     // Sending may disconnect and clear the replica registry; send after traversal.
-    if(current.automated_controls) set_local_movement_probe(input.buttons,input.yaw,input.pitch);
+    if(current.automated_controls && !strstr(GetCommandLineA(),"-coop_native_combat_probe") && !strstr(GetCommandLineA(),"-coop_native_acceptance_probe")) set_local_movement_probe(input.buttons,input.yaw,input.pitch);
     if(current.client.send_input(input)==coopnet::SendResult::Sent) {
         current.last_sent_buttons=input.buttons; current.controls_sent=true;
     }
@@ -1219,7 +1261,8 @@ void stop() {
     if (session) {
         try {
             coopnet::InventoryView character; LocalActorPose local; ActorConditionState condition;
-            bool ready=(session->mode==coopnet::Mode::Host || world_level_is_replica()) && capture_local_actor(local) && capture_owned_character(character) && capture_actor_condition(local.object,condition);
+            const bool owned_ready=session->mode==coopnet::Mode::Host || (native_world_requested() ? native_character_ready() : world_level_is_replica());
+            bool ready=owned_ready && capture_local_actor(local) && capture_owned_character(character) && capture_actor_condition(local.object,condition);
             if(!ready && session->mode==coopnet::Mode::Client && session->exit_character.actor) {character=session->exit_character;condition=session->exit_condition;ready=true;}
             if(ready) {
                 capture_player_name(session->local_player_name);
@@ -1249,7 +1292,7 @@ void stop() {
             Msg("* CoopNet guest simulation removed: inputs %u distance %.3f",entry.second.inputs,entry.second.distance);
         if (session->world_probe) Msg("* CoopNet NPC state updates: %u",session->world_updates);
         clear_host_world_rules();
-        end_world_replication(); clear_guest_actors(); clear_remote_actors(); session.reset(); Msg("* CoopNet session stopped");
+        end_world_replication(); clear_guest_actors(); clear_remote_actors(); session.reset(); set_native_world_policy(false); Msg("* CoopNet session stopped");
     }
 }
 bool simulation_active() {
@@ -1324,6 +1367,21 @@ void update(double) {
                     session->dialogue_probe_done=exercise_native_dialogue_topics_probe(session->host.identity(),guest.object,guest.entity,guest.generation,pose.level);
             }
             publish_world(*session);
+            exercise_native_acceptance_probe(elapsed);
+            if(strstr(GetCommandLineA(),"-coop_live_combat_probe")) exercise_shared_hit_probe();
+            if (native_world_requested()) {
+                std::uint16_t object;coopnet::WorldHit hit;unsigned count=0;
+                while(count++<128 && peek_player_hit(object,hit)) {
+                    auto found=std::find_if(session->guests.begin(),session->guests.end(),[&](const auto& entry){return entry.second.object==object;});
+                    if(found==session->guests.end()) {discard_player_hit();continue;}
+                    LocalActorPose pose;
+                    if(!capture_guest_actor(object,pose) || session->party_loading) {discard_player_hit();continue;}
+                    hit.actor=found->second.entity;hit.generation=found->second.generation;hit.level=pose.level;hit.motion_epoch=found->second.motion_epoch;
+                    hit.target=coopnet::world_anchor(session->host.identity(),static_cast<std::uint16_t>(hit.target-1));
+                    if(!session->host.send_player_hit(found->first,hit)) break;
+                    discard_player_hit();
+                }
+            }
             publish_shared_world(*session,elapsed);
             update_party(*session,elapsed);
             update_party_probe(*session,elapsed);
@@ -1381,8 +1439,10 @@ void update(double) {
                 session->saved_resume_attempt=false;
                 session->client.stop();
                 const auto connection=session->runtime.connect(session->endpoint.c_str());
-                if (connection!=k_HSteamNetConnection_Invalid)
+                if (connection!=k_HSteamNetConnection_Invalid) {
                     session->client.start(std::make_unique<coopnet::GnsTransport>(session->runtime,connection),session->host_character,session->build,nullptr,session->local_player_name);
+                    if(session->has_selected_join_character) session->client.set_character_profile(session->selected_join_character);
+                }
                 Msg("* CoopNet saved session expired; retrying saved character with new host session");
             } else if (connection_state==coopnet::ClientState::Disconnected || connection_state==coopnet::ClientState::Offline) {
                 session->reconnect_wait+=elapsed;
@@ -1390,9 +1450,19 @@ void update(double) {
                     session->reconnect_wait=0; session->reconnect_delay=(std::min)(session->reconnect_delay*2,8.0);
                     const auto connection=session->runtime.connect(session->endpoint.c_str());
                     if (connection!=k_HSteamNetConnection_Invalid) {
+                        if(guest_native_world() && native_character_ready()) {
+                            coopnet::InventoryView owned;
+                            if(capture_owned_character(owned)) {
+                                owned.actor=session->host_character;
+                                session->selected_join_character=std::move(owned);session->has_selected_join_character=true;
+                            }
+                        }
                         auto transport=std::make_unique<coopnet::GnsTransport>(session->runtime,connection);
                         if (connection_state==coopnet::ClientState::Disconnected) session->client.reconnect(std::move(transport));
-                        else session->client.start(std::move(transport),session->host_character,session->build,nullptr,session->local_player_name);
+                        else {
+                            session->client.start(std::move(transport),session->host_character,session->build,nullptr,session->local_player_name);
+                        }
+                        if(session->has_selected_join_character) session->client.set_character_profile(session->selected_join_character);
                         session->world_load_requested=false;
                         Msg("* CoopNet connection retry: %s",connection_state==coopnet::ClientState::Disconnected ? "resume" : "initial join");
                     }
@@ -1410,10 +1480,24 @@ void update(double) {
             }
             present_client(*session, elapsed);
             update_local_inventory_view();
+            if(native_character_ready()) while(!session->incoming_player_hits.empty()) {
+                const auto hit=session->incoming_player_hits.front();session->incoming_player_hits.pop_front();
+                if(hit.motion_epoch==session->local_motion_epoch && !session->party_loading) apply_player_hit(session->client.session().welcome().session,hit);
+            }
             update_world_items();
             update_npc_catalogue();
             update_container_catalogue();
+            set_personal_world_scope(session->client.baseline().scope);
+            update_personal_loot();
+            exercise_native_acceptance_probe(elapsed);
             update_guest_ui(elapsed);
+            if (guest_native_world() && native_character_ready() && session->tick%25==0) {
+                LocalActorPose local;coopnet::InventoryView character;ActorConditionState condition;
+                std::vector<std::uint8_t> personal;
+                if (capture_local_actor(local) && capture_owned_character(character) && capture_actor_condition(local.object,condition) && capture_personal_state(personal)) {
+                    session->exit_character=std::move(character);session->exit_condition=condition;
+                }
+            }
             exercise_guest_features_probe(elapsed);
             if(session->shared_radio_pending && apply_radio_history(session->client.session().welcome().session,session->shared_radio_level,session->shared_radio)) session->shared_radio_pending=false;
             if (guest_native_world()) session->shared_quests_pending=false;
@@ -1491,6 +1575,8 @@ void update(double) {
                 auto publish=[&](coopnet::Identity entity,std::uint32_t generation,std::uint16_t object,std::uint32_t level) {
                     exercise_appearance_probe(object,appearance_elapsed);
                     coopnet::ActorAppearance a;if(!capture_actor_appearance(object,a))return;
+                    const auto owned=session->owner_appearances.find(entity);
+                    if(native_world_requested() && owned!=session->owner_appearances.end() && owned->second.generation==generation && owned->second.level==level) a=owned->second;
                     a.entity=entity;a.generation=generation;a.level=level;
                     if(!session->host.publish_appearance(a))throw std::runtime_error("Native actor appearance publication failed");
                 };
@@ -1499,6 +1585,33 @@ void update(double) {
                 for(const auto& entry:session->guests) if(entry.second.generation) {
                     const auto* actor=session->entities.find(entry.second.entity);if(actor && actor->active)
                         publish(actor->entity,actor->generation,entry.second.object,actor->engine.level);
+                }
+            }
+            if (session->mode==coopnet::Mode::Host && native_world_requested()) {
+                std::set<coopnet::Identity> visible;
+                for(const auto& entry:session->guests) {
+                    LocalActorPose native;if(!capture_guest_actor(entry.second.object,native)) continue;
+                    RemoteActorPose pose;pose.entity=entry.second.entity;pose.generation=entry.second.generation;pose.level=native.level;pose.movement=native.movement;
+                    std::memcpy(pose.visual,native.visual,sizeof(pose.visual));
+                    for(unsigned axis=0;axis<3;++axis) {pose.position[axis]=native.position[axis];pose.rotation[axis]=native.rotation[axis];}
+                    const auto appearance=session->owner_appearances.find(pose.entity);
+                    if(appearance!=session->owner_appearances.end() && appearance->second.generation==pose.generation && appearance->second.level==pose.level) pose.appearance=appearance->second;
+                    else {
+                        if(!capture_actor_appearance(entry.second.object,pose.appearance)) continue;
+                        pose.appearance.entity=pose.entity;pose.appearance.generation=pose.generation;pose.appearance.level=pose.level;
+                    }
+                    if(present_remote_actor(pose)) visible.insert(pose.entity);
+                }
+                for(auto entity:session->presented) if(!visible.count(entity)) remove_remote_actor(entity);
+                session->presented=std::move(visible);
+            }
+            if(session->mode==coopnet::Mode::Client && guest_native_world() && (session->appearance_wait+=elapsed)>=.1) {
+                session->appearance_wait=0;LocalActorPose local;coopnet::ActorAppearance appearance;coopnet::ActorPresence owned;
+                session->client.actors().visit([&](const coopnet::ActorPresence& a){if(a.player==session->client.session().welcome().player) owned=a;});
+                if(owned.entity && capture_local_actor(local) && capture_actor_appearance(local.object,appearance)) {
+                    appearance.entity=owned.entity;appearance.generation=owned.generation;appearance.level=owned.level;
+                    const auto signature=coopnet::encode_appearance(appearance);
+                    if(signature!=session->owner_appearance_signature && session->client.send_owner_appearance(appearance)==coopnet::SendResult::Sent) session->owner_appearance_signature=signature;
                 }
             }
             update_player_nameplates(*session,elapsed); update_join_news(*session);
@@ -1609,6 +1722,8 @@ void command(const char* name, const char* arguments) {
         }
         // Publish the session only after all initialization succeeds.
         auto next = std::make_unique<Session>();
+        reset_personal_character();
+        set_native_world_policy(true);
         next->build=build; next->host_character=character; next->endpoint=endpoint;
         capture_player_name(next->local_player_name);
         if (!strcmp(name, "coop_host")) {
@@ -1617,7 +1732,13 @@ void command(const char* name, const char* arguments) {
             if (consumed != endpoint.size() || !port || port > 65535 ||
                 !next->runtime.listen(static_cast<std::uint16_t>(port))) throw std::runtime_error("Invalid port or listen failed");
             next->host.start(random_identity(), character, build, random_identity);
+            auto* appearance_owner=next.get();
+            next->host.set_owner_appearance_handler([appearance_owner](coopnet::Identity,const coopnet::ActorAppearance& a) {
+                if(!native_world_requested()) return;
+                appearance_owner->owner_appearances[a.entity]=a;appearance_owner->host.publish_appearance(a);
+            });
             next->host.require_character_profile(strstr(GetCommandLineA(),"-coop_engine_fixture")==nullptr);
+            next->host.set_character_validation_ready([] {LocalActorPose host;return capture_local_actor(host);});
             auto* owner=next.get();
             next->host.set_rejection_handler([](const coopnet::ClientHello& hello,const coopnet::Welcome& welcome) {
                 if(welcome.result==coopnet::Admission::VersionMismatch || welcome.result==coopnet::Admission::BuildMismatch)
@@ -1635,7 +1756,7 @@ void command(const char* name, const char* arguments) {
                     Msg("! CoopNet join rejected: saved character faction must match the host faction"); return false;
                 }
                 for (const auto& participant:owner->host.session().players()) if (participant.id==player && participant.character==character.actor) {
-                    if (!owner->guest_inventory.count(character.actor)) owner->join_characters[character.actor]=character;
+                    if (native_world_requested() || !owner->guest_inventory.count(character.actor)) owner->join_characters[character.actor]=character;
                     Msg("* CoopNet selected character received: character %llu items %u rubles %u",character.actor,static_cast<unsigned>(character.items.size()),character.money);
                     return true;
                 }
@@ -1685,10 +1806,19 @@ void command(const char* name, const char* arguments) {
             coopnet::InventoryView selected_character;
             if (read_character_save(character,selected_character) || capture_join_character(selected_character)) {
                 selected_character.actor=character; next->client.set_character_profile(selected_character);
+                next->selected_join_character=selected_character;next->has_selected_join_character=true;
+                next->exit_character=selected_character;
+                next->exit_condition={selected_character.health,selected_character.power,selected_character.radiation};
                 Msg("* CoopNet joining with loaded character: items %u rubles %u",static_cast<unsigned>(selected_character.items.size()),selected_character.money);
             }
             auto* owner = next.get();
-            next->client.set_inventory_view_sink([owner](const coopnet::InventoryView& view) { owner->exit_character=view;owner->exit_character.npc_disposition.clear();queue_local_inventory_view(view); });
+            next->client.set_inventory_view_sink([owner](const coopnet::InventoryView& view) {
+                if(!native_world_requested() || !owner->exit_character.actor) {
+                    owner->exit_character=view;owner->exit_character.npc_disposition.clear();
+                    if(view.has_condition) owner->exit_condition={view.health,view.power,view.radiation};
+                }
+                queue_local_inventory_view(view);
+            });
             next->client.set_world_rules_sink([](std::uint32_t revision,const std::vector<coopnet::WorldRule>& rules) { queue_host_world_rules(revision,rules); });
             next->client.set_world_clock_sink([owner](const coopnet::WorldClock& clock) {
                 if (apply_host_world_clock(clock) && ++owner->host_clock_updates==1)
@@ -1738,6 +1868,10 @@ void command(const char* name, const char* arguments) {
                     if (vitals.tick%25==0) Msg("* CoopNet authoritative guest health applied: %.3f",vitals.health);
                 }
             });
+            next->client.set_player_hit_sink([owner](const coopnet::WorldHit& hit) {
+                if(owner->incoming_player_hits.size()>=128) throw std::runtime_error("Native player hit queue overflow");
+                owner->incoming_player_hits.push_back(hit);
+            });
             next->client.set_respawn_sink([owner](const coopnet::RespawnResult& result) {
                 if (result.status==coopnet::RespawnStatus::Accepted) {
                     LocalActorPose local;
@@ -1767,7 +1901,7 @@ void command(const char* name, const char* arguments) {
                 unsigned applied=0;
                 for (const auto& object:state.objects)
                     if (apply_world_object(owner->client.session().welcome().session,object.anchor,object.incarnation,
-                        object.position.data(),object.rotation.data(),object.health,object.animations,object.zone_state,object.zone_time)) ++applied;
+                        object.position.data(),object.rotation.data(),object.health,object.animations,object.zone_state,object.zone_time,object.killer,object.killer_player,object.physics)) ++applied;
                 owner->world_updates+=applied;
                 if (applied && owner->world_updates==applied)
                     Msg("* CoopNet authoritative NPC states applied: objects %u level %u",applied,state.level);
@@ -1805,7 +1939,7 @@ void command(const char* name, const char* arguments) {
         session->world_probe=true; session->replica_probe=true; session->movement_probe=true;
         begin_world_replication(); begin_guest_simulation();
         Msg("* CoopNet shared host world started; party travels together");
-    } catch (const std::exception& error) { menu_join_error=error.what(); Msg("! %s", error.what()); }
+    } catch (const std::exception& error) { if(!session) set_native_world_policy(false); menu_join_error=error.what(); Msg("! %s", error.what()); }
 }
 bool available() { return true; }
 bool guest_settings_locked() { return session && session->mode==coopnet::Mode::Client; }
@@ -1963,6 +2097,12 @@ void join_status(char* output,unsigned capacity) {
     snprintf(output,capacity,"%s",status);
 }
 unsigned long long host_save_source_scope() {return session && session->mode==coopnet::Mode::Host ? session->source_scope : 0;}
+bool guest_visual_owned(std::uint16_t object) {
+    if(!session || session->mode!=coopnet::Mode::Host || !native_world_requested()) return false;
+    for(const auto& entry:session->guests) if(entry.second.object==object) return session->presented.count(entry.second.entity)!=0;
+    return false;
+}
+std::uint64_t owned_player_identity() {return session ? (session->mode==coopnet::Mode::Host ? 1 : session->client.session().welcome().player) : 0;}
 unsigned long long guest_character_identity(unsigned short object) {
     if(!session || session->mode!=coopnet::Mode::Host) return 0;
     for(const auto& player:session->host.session().players()) if(player.id!=1 && player.connected) {
@@ -1983,6 +2123,8 @@ void stop() {}
 bool available() { return false; }
 bool take_version_mismatch(char*,unsigned) { return false; }
 unsigned long long host_save_source_scope() {return 0;}
+bool guest_visual_owned(std::uint16_t) {return false;}
+std::uint64_t owned_player_identity() {return 0;}
 unsigned long long guest_character_identity(unsigned short) {return 0;}
 bool guest_settings_locked() { return false; }
 bool world_setting_command(const char*) { return false; }

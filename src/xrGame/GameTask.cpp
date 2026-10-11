@@ -340,6 +340,33 @@ void SScriptTaskHelper::save(IWriter& stream)
 	save_data(m_s_lua_functions_on_fail, stream);
 }
 
+void CGameTask::save_personal_task(IWriter& stream)
+{
+    save_task(stream);
+    save_data(m_completeInfos,stream);
+    save_data(m_failInfos,stream);
+    save_data(m_infos_on_complete,stream);
+    save_data(m_infos_on_fail,stream);
+    save_data(m_read,stream);
+}
+
+void CGameTask::remap_personal_target(u16 object)
+{
+    RemoveMapLocations(false);
+    m_map_object_id=object;
+    if (m_task_state==eTaskStateInProgress && object!=0xffff) CreateMapLocation(true);
+}
+
+void CGameTask::load_personal_task(IReader& stream)
+{
+    load_task(stream);
+    load_data(m_completeInfos,stream);
+    load_data(m_failInfos,stream);
+    load_data(m_infos_on_complete,stream);
+    load_data(m_infos_on_fail,stream);
+    load_data(m_read,stream);
+}
+
 void SGameTaskKey::save(IWriter& stream)
 {
 	save_data(task_id, stream);

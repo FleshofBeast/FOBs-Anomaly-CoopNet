@@ -13,7 +13,7 @@ std::map<u16,NativeAward> native_awards;
 }
 bool reward_actor_pending(std::uint16_t object) {return native_awards.count(object)!=0;}
 SharedQuestRewardScope::SharedQuestRewardScope(const char* quest,std::uint64_t received,bool completed) {
-    if(!completed || !quest || !quest[0] || active_reward || !collect_world_objects || world_level_is_replica() || !g_actor || !ai().get_alife()) return;
+    if(native_world_requested() || !completed || !quest || !quest[0] || active_reward || !collect_world_objects || world_level_is_replica() || !g_actor || !ai().get_alife()) return;
     // Quest instance, rather than snapshot revision, owns the reward.
     std::uint64_t id=1469598103934665603ull;
     for(const unsigned char* c=reinterpret_cast<const unsigned char*>(quest);*c;++c) {id^=*c;id*=1099511628211ull;}

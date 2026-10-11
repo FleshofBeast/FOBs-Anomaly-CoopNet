@@ -2,7 +2,8 @@
 
 The guest should run native presentation locally: skeletal animation, interpolation,
 weapon feedback, particles, sound, camera and UI. The host chooses shared-world
-outcomes: NPC AI, spawning, damage, death, item ownership, quests and rewards.
+outcomes: NPC AI, spawning, shared NPC damage and death. Each player runs native
+personal inventory, quests, rewards, loot views and environmental damage.
 Guest actions must reach the host and their results must return to every player.
 This keeps one host world and does not introduce location workers.
 
@@ -25,7 +26,24 @@ Primary sources:
 The architecture is applicable to X-Ray, but OpenMW actor code is not a drop-in
 implementation for X-Ray's animation, physics, Lua or ALife systems.
 
-## Current changes under validation
+## Current native gameplay behavior
+
+Normal sessions use native guest gameplay. Saved equipment is replayed through
+native inventory hooks before the saved active weapon is drawn. Guest native
+bullet collisions send reliable hits; the host applies native damage once and
+returns health/death. Mirrored guest weapon playback cannot apply duplicate damage.
+Host attacks against the player are delivered to the owner's native damage path.
+Personal tasks and loot remain local and are included in the portable character.
+
+Protocol 34 adds individual corpse rigid-body state with native physics between
+updates. Paired fights in an open arena passed actual host and guest bullet hits,
+shared death and 13-body boar ragdoll application. See `NATIVE_WORLD_REWORK.md`
+for build/run evidence and visual-review limits. Remote aim pitch now uses the
+native spine/shoulder/head factors while keeping the model's root upright.
+Guest dynamic world-radio production is suppressed to avoid duplicating received
+host broadcasts. This does not establish complete world-event replication.
+
+## Earlier implementation checkpoints
 
 - Protocol 31 gives the guest ownership of ordinary player movement. Its native
   local controls and physics send position, velocity and movement state to the
@@ -38,8 +56,8 @@ implementation for X-Ray's animation, physics, Lua or ALife systems.
   with motion slot/index, phase, speed and stop state. Guests play these cycles
   and advance native animation tracks locally. Matching model and motion assets
   are required on both clients.
-- Host-controlled guest weapons are permitted to generate authoritative hits.
-  Local guest shots still provide immediate feedback without deciding damage.
+- Earlier host-controlled guest weapons generated authoritative hits. The current
+  native path uses owner collision reports and disables mirrored weapon damage.
 - The replacement combat evaluator retains the stock evaluator's `ignored_zone`
   upvalue table. Previously, the copied function could call `ipairs(nil)` when
   evaluating ordinary NPC enemies.

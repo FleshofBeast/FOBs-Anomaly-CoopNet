@@ -127,6 +127,7 @@ void CObjectList::SingleUpdate(CObject* O)
 	// Msg ("[%d][0x%08x]IAmNotACrowAnyMore (CObjectList::SingleUpdate)", Device.dwFrame, fast_dynamic_cast<void*>(O));
 
 	if (!engine_coopnet::update_world_replica(O)) O->UpdateCL();
+    engine_coopnet::finalize_world_replica(O);
 #ifdef DEBUG
 	VERIFY3(O->dbg_update_cl == Device.dwFrame, "Broken sequence of calls to 'UpdateCL'", *O->cName());
 #endif

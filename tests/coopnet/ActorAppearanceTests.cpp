@@ -35,6 +35,14 @@ int main(){
     require(host.set_interest_level(player,3));host.update(.1);client.update(.1);
     require(client.appearance(90)&&client.appearance(90)->body==a.body);
     require(host.remove_actor(90,1));host.update(.1);client.update(.1);require(!client.appearance(90));
-    require(!host.publish_appearance(a));client.stop();host.stop();
+    require(!host.publish_appearance(a));
+    require(host.create_actor({91,player,2,1,3}));host.update(.1);client.update(.1);
+    require(host.assign_level(player,3,1000));host.update(.1);client.update(.1);
+    require(client.acknowledge_level(3));host.update(.1);client.update(.1);
+    unsigned owner_updates=0;host.set_owner_appearance_handler([&](Identity sender,const ActorAppearance& value){require(sender==player && value.entity==91);++owner_updates;});
+    a.entity=91;require(client.send_owner_appearance(a)==SendResult::Sent);host.update(.1);require(owner_updates==1);
+    a.entity=90;require(client.send_owner_appearance(a)==SendResult::Invalid);
+    a.entity=91;a.generation=2;require(client.send_owner_appearance(a)==SendResult::Invalid);
+    client.stop();host.stop();
     std::cout<<"Actor appearance validation, late join, gear changes, relevance and cleanup passed\n";
 }

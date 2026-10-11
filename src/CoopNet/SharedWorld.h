@@ -23,24 +23,52 @@ inline bool shared_string(Reader& r,std::string& value,std::size_t limit) {
     value.clear(); for (unsigned i=0;i<n;++i) { if (!r.integer(c,1) || !c) return false; value.push_back(static_cast<char>(c)); } return true;
 }
 inline bool shared_number(Reader& r,float& value) { std::uint64_t bits; if (!r.integer(bits,4)) return false; const auto b=static_cast<std::uint32_t>(bits); std::memcpy(&value,&b,4); return std::isfinite(value) && std::abs(value)<=1000000; }
-struct NPCRecord { WorldPose pose; std::string section,visual; };
-inline bool valid_npc(const NPCRecord& n) { return shared_name(n.section,96) && (n.visual.empty() || shared_name(n.visual,192,true)) && valid_world_state({1,0,{n.pose}}); }
+struct ZoneShape { std::uint8_t type=0; std::array<float,16> values{}; };
+inline bool valid_zone_shape(const ZoneShape& shape) {
+    if(shape.type>1) return false;
+    for(float value:shape.values) if(!std::isfinite(value) || std::abs(value)>1000000) return false;
+    if(!shape.type) { if(shape.values[3]<=0 || shape.values[3]>10000) return false; for(unsigned i=4;i<16;++i) if(shape.values[i]!=0) return false; }
+    else {
+        if(shape.values[3]!=0 || shape.values[7]!=0 || shape.values[11]!=0 || shape.values[15]!=1) return false;
+        const auto& v=shape.values;
+        const float determinant=v[0]*(v[5]*v[10]-v[6]*v[9])-v[1]*(v[4]*v[10]-v[6]*v[8])+v[2]*(v[4]*v[9]-v[5]*v[8]);
+        if(!std::isfinite(determinant) || std::abs(determinant)<.000001f) return false;
+    }
+    return true;
+}
+struct NPCRecord { WorldPose pose; std::string section,visual,name; std::vector<ZoneShape> shapes; };
+inline bool valid_npc(const NPCRecord& n) {
+    if(!shared_name(n.section,96) || (!n.visual.empty() && !shared_name(n.visual,192,true)) || n.name.size()>192 || n.name.find('\0')!=std::string::npos || !valid_world_state({1,0,{n.pose}})) return false;
+    if(n.pose.zone_state==255) return n.shapes.empty();
+    if(n.shapes.empty() || n.shapes.size()>64) return false;
+    for(const auto& shape:n.shapes) if(!valid_zone_shape(shape)) return false;
+    return true;
+}
 inline std::vector<std::uint8_t> encode_npcs(const std::vector<NPCRecord>& records) {
     if (records.size()>4096) throw std::length_error("NPC catalogue limit");
     SharedWriter w; w.integer(records.size(),2); std::set<Identity> ids;
     for (const auto& n:records) {
         if (!valid_npc(n) || !ids.insert(n.pose.anchor).second) throw std::invalid_argument("NPC catalogue");
-        w.integer(n.pose.anchor,8); w.integer(n.pose.incarnation,8); w.string(n.section); w.string(n.visual);
+        w.integer(n.pose.anchor,8); w.integer(n.pose.incarnation,8); w.string(n.section); w.string(n.visual); w.string(n.name);
         for (const auto& v:{n.pose.position,n.pose.rotation}) for (float f:v) w.number(f); w.number(n.pose.health);
+        w.integer(n.pose.killer,8);w.integer(n.pose.killer_player ? 1 : 0,1);
+        w.integer(n.pose.zone_state,1); w.integer(n.pose.zone_time,4); w.integer(n.shapes.size(),1);
+        for(const auto& shape:n.shapes) { w.integer(shape.type,1); for(float value:shape.values) w.number(value); }
     } return w.bytes;
 }
 inline bool decode_npcs(const std::vector<std::uint8_t>& bytes,std::vector<NPCRecord>& output) {
     if (bytes.size()>shared_limit) return false; Reader r(bytes); std::uint64_t count; if (!r.integer(count,2) || count>4096) return false;
     std::vector<NPCRecord> result; std::set<Identity> ids;
     for (unsigned i=0;i<count;++i) {
-        NPCRecord n; if (!r.integer(n.pose.anchor,8) || !r.integer(n.pose.incarnation,8) || !shared_string(r,n.section,96) || !shared_string(r,n.visual,192)) return false;
+        NPCRecord n; if (!r.integer(n.pose.anchor,8) || !r.integer(n.pose.incarnation,8) || !shared_string(r,n.section,96) || !shared_string(r,n.visual,192) || !shared_string(r,n.name,192)) return false;
         for (auto* v:{&n.pose.position,&n.pose.rotation}) for (auto& f:*v) if (!shared_number(r,f)) return false;
-        if (!shared_number(r,n.pose.health) || !valid_npc(n) || !ids.insert(n.pose.anchor).second) return false; result.push_back(std::move(n));
+        std::uint64_t player;
+        if (!shared_number(r,n.pose.health) || !r.integer(n.pose.killer,8) || !r.integer(player,1) || player>1) return false;n.pose.killer_player=player!=0;
+        std::uint64_t state,time,shapes;
+        if(!r.integer(state,1) || !r.integer(time,4) || !r.integer(shapes,1) || shapes>64) return false;
+        n.pose.zone_state=static_cast<std::uint8_t>(state); n.pose.zone_time=static_cast<std::uint32_t>(time);
+        for(unsigned shape_index=0;shape_index<shapes;++shape_index) { ZoneShape shape; std::uint64_t type; if(!r.integer(type,1)) return false; shape.type=static_cast<std::uint8_t>(type); for(float& value:shape.values) if(!shared_number(r,value)) return false; n.shapes.push_back(shape); }
+        if(!valid_npc(n) || !ids.insert(n.pose.anchor).second) return false; result.push_back(std::move(n));
     } if (r.remaining()) return false; output=std::move(result); return true;
 }
 struct ContainerRecord { WorldPose pose; std::string section; bool closed=false,can_take=true; };

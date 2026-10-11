@@ -172,6 +172,7 @@ void CGameTaskManager::SetTaskState(const shared_str& id, ETaskState state)
 
 void CGameTaskManager::UpdateTasks()
 {
+	if (!engine_coopnet::restore_personal_quests()) return;
 	if (Device.Paused()) return;
 
 	Level().MapManager().DisableAllPointers();

@@ -37,6 +37,8 @@ struct PlayerNameplate {
 };
 bool capture_player_name(std::string& name);
 bool capture_actor_appearance(std::uint16_t object,coopnet::ActorAppearance& appearance);
+bool guest_visual_owned(std::uint16_t object);
+std::uint64_t owned_player_identity();
 void exercise_appearance_probe(std::uint16_t object,double elapsed);
 bool character_selection_ready();
 bool place_local_actor(std::uint32_t level,const float* position,const float* velocity);

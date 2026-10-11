@@ -335,6 +335,7 @@ void CInventoryOwner::renderable_Render()
 
 void CInventoryOwner::OnItemTake(CInventoryItem* inventory_item)
 {
+    engine_coopnet::personal_loot_changed(smart_cast<CGameObject*>(this));
 	CGameObject* object = smart_cast<CGameObject*>(this);
 	VERIFY(object);
 	object->callback(GameObject::eOnItemTake)(inventory_item->object().lua_game_object());
@@ -506,6 +507,7 @@ void CInventoryOwner::ChangeReputation(CHARACTER_REPUTATION_VALUE delta)
 
 void CInventoryOwner::OnItemDrop(CInventoryItem* inventory_item, bool just_before_destroy)
 {
+    engine_coopnet::personal_loot_changed(smart_cast<CGameObject*>(this));
 	CGameObject* object = smart_cast<CGameObject*>(this);
 	VERIFY(object);
 	object->callback(GameObject::eOnItemDrop)(inventory_item->object().lua_game_object());

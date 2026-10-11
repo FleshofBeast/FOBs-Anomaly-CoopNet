@@ -7,7 +7,7 @@ CoopNet is an experimental engine modification for **S.T.A.L.K.E.R. Anomaly 1.5.
 ## Install the compiled test build (no compiler required)
 
 1. Install the full [Anomaly 1.5.3 base game](https://www.moddb.com/mods/stalker-anomaly/downloads/stalker-anomaly-153). [Alternate download/torrent page](https://anomalymod.com/download-install/).
-2. Download **FOBs-Anomaly-CoopNet-EarlyTest-DX11-Owner-Movement.zip** from the [early-test release](https://github.com/FleshofBeast/FOBs-Anomaly-CoopNet/releases/tag/coopnet-early-test-owner-movement). Choose the named ZIP asset, not GitHub's source-code archives.
+2. Download **FOBs-Anomaly-CoopNet-EarlyTest-DX11-Native-World.zip** from the [early-test release](https://github.com/FleshofBeast/FOBs-Anomaly-CoopNet/releases/tag/coopnet-early-test-native-world). Choose the named ZIP asset, not GitHub's source-code archives.
 3. Close the game and back up your saves and existing `bin`/`gamedata` folders.
 4. Extract the package and copy its `bin` and `gamedata` folders into the Anomaly game root, beside `fsgame.ltx`. Merge folders and replace matching files; keep the other base-game files.
 5. Clear the shader cache through the Anomaly launcher, then select **DX11 with AVX disabled**. Only `bin\AnomalyDX11.exe` contains CoopNet; the base game's DX11-AVX and other renderer executables do not. If launching through a shortcut, set its “Start in” folder to the game root containing `fsgame.ltx`. Install Microsoft's [x64 Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) if missing, and [DirectX End-User Runtimes (June 2010)](https://www.microsoft.com/en-us/download/details.aspx?id=8109) for missing D3DX libraries (extract the installer and run `DXSETUP.exe`).
@@ -15,7 +15,7 @@ CoopNet is an experimental engine modification for **S.T.A.L.K.E.R. Anomaly 1.5.
 
 Start with clean Anomaly 1.5.3; arbitrary modpacks are not verified. The compiled package includes the networking DLLs and matching gamedata, but not the base game. **Visual Studio and Git are only required if you choose to build from source.**
 
-Use the current **Owner-Movement** package: it also includes matching ICU, TBB, Discord, and audio engine DLLs. If launch still fails, report the exact error and last 40 lines of the newest `.log` file under `appdata\logs`, plus the selected renderer and AVX setting.
+Use the current **Native-World** package: it also includes matching ICU, TBB, Discord, and audio engine DLLs. If launch still fails, report the exact error and last 40 lines of the newest `.log` file under `appdata\logs`, plus the selected renderer and AVX setting.
 
 ## 1. Optional source build: prepare the game and build tools
 
@@ -104,7 +104,7 @@ If you host on a different port, use it in every command and forwarding rule. TC
 
 Enter `/help` in the game console for available commands. Hosting uses `coop_host`, not `/host`. Use `coop_status` to inspect the session, `coop_disconnect` to leave or stop hosting, and `coop_respawn` to respawn at a living teammate when downed.
 
-The death screen lists session teammates. Click a living player's name to follow them in third person; A/D cycles available living teammates. Stay in spectator mode as long as you like, then press Enter to respawn at that player's current position. Downed teammates cannot be selected. If your target dies or disconnects, another living teammate is selected when available; if everyone is down, respawn is unavailable. Escape opens the main menu. This requires matching protocol-28 builds on every player.
+The death screen lists session teammates. Click a living player's name to follow them in third person; A/D cycles available living teammates. Stay in spectator mode as long as you like, then press Enter to respawn at that player's current position. Downed teammates cannot be selected. If your target dies or disconnects, another living teammate is selected when available; if everyone is down, respawn is unavailable. Escape opens the main menu. This requires matching protocol-35 builds on every player.
 
 The host controls the shared world settings, and players travel between locations together. Selected guest saves transfer faction, inventory, equipment, and rubles. Saved reputation/rank, faction goodwill and identifiable named-NPC goodwill now transfer with the selected character; unrelated random NPCs from a private world are not matched by their numeric IDs. Fresh characters use solo faction defaults; a fresh Free Stalker should not make Wolf hostile. Not every mutant's specialized ability or modded AI script has been verified. Host-completed quests share money, awarded items and reputation/goodwill changes once per participating character. Scripted story/guest turn-in paths remain experimental; this is a testing build, not a complete co-op release. See [current progress and test evidence](docs/coop/PROGRESS.md).
 
@@ -116,4 +116,7 @@ The host also creates the named native world save (`<Player name>.scop`, `.scoc`
 
 If a portable save becomes corrupted, close the game, preserve the damaged file, and restore its previous `.coopchar` bytes from the matching timestamped `.bak` in `coopnet-backups`. For a host world, restore the matching `.scop`, `.scoc` and `.coopworld` backups together. Forced process termination or a crash may prevent the exit save; leave through the game menu or `coop_disconnect`.
 
-All players must install this protocol-27 package. The game and mod fingerprints in console commands remain manual identifiers; they do not automatically hash installed mods.
+All players must install this protocol-35 package. The game and mod fingerprints in console commands remain manual identifiers; they do not automatically hash installed mods.
+
+
+The Native-World release restores saved guest weapons through native equipment callbacks and forwards guest bullet hits to shared enemies. Shared corpses receive native physics-body state; dynamically created anomalies synchronize their shapes, creation and removal, and guests recover retained shared entities removed locally. Electric anomaly collision and protection run on the owning client. Guest-generated duplicate radio news is suppressed. Portable character profiles retain personal task/script state and touched loot contents. Full single-player parity, persistent quest followers, general NPC speech and extended internet play remain unfinished or unverified.

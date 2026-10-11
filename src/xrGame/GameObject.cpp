@@ -1090,6 +1090,7 @@ void CGameObject::DestroyObject()
 
 void CGameObject::shedule_Update(u32 dt)
 {
+    if (cast_actor() && !engine_coopnet::restore_personal_quests()) return;
 	//уничтожить
 	if (NeedToDestroyObject())
 	{

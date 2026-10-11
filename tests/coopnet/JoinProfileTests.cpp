@@ -75,6 +75,21 @@ int main() {
         if(allowed)require(returning.session().state()==ClientState::Connected && guarded.player_ready(2) && returning.session().welcome().generation==2);
         else require(returning.session().state()==ClientState::Rejected && returning.session().welcome().result==Admission::CharacterRejected);
     }
+    {
+        HostPump loading;ClientPump joining;bool ready=false;unsigned validations=0;
+        loading.start(975,1,{10,20},[]{return Identity(9100);});loading.require_character_profile(true);
+        loading.set_character_validation_ready([&]{return ready;});
+        loading.set_character_handler([&](Identity,const InventoryView& selected){++validations;return ready && selected.money==4321;});
+        auto connection=MemoryTransport::pair();require(loading.attach(1,std::move(connection.second)));
+        joining.start(std::move(connection.first),2,{10,20});
+        InventoryView selected;selected.actor=2;selected.generation=selected.level=selected.revision=1;selected.money=4321;
+        joining.set_character_profile(selected);
+        for(unsigned n=0;n<20;++n){joining.update(1);loading.update(1);}
+        require(joining.session().state()==ClientState::Connected && !loading.player_ready(2) && !validations);
+        ready=true;
+        for(unsigned n=0;n<8;++n){joining.update(.01);loading.update(.01);}
+        require(loading.player_ready(2) && validations==1);
+    }
     HostPump denied_host; Identity denied_token=8000;
     denied_host.start(901,1,{10,20},[&] { return ++denied_token; });
     denied_host.require_character_profile(true);
