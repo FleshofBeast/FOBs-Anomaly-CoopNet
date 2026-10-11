@@ -453,7 +453,7 @@ void CActor::IR_OnKeyboardHold(int cmd)
 
 void CActor::IR_OnMouseMove(int dx, int dy)
 {
-    if (is_coopnet_downed()) return;
+    if (is_coopnet_downed()) {coopnet_orbit_death(dx*.004f,dy*.003f);return;}
 	if (hud_adj_mode)
 	{
 		g_player_hud->tune(Ivector().set(dx, dy, 0));

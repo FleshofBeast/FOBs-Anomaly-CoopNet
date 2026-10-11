@@ -39,5 +39,6 @@ bool select_spectator(unsigned long long entity,unsigned generation);
 void clear_spectator();
 unsigned long long spectator_target();
 bool spectator_pose(float* position,float* rotation);
+void orbit_death_camera(float yaw,float pitch);
 void respawn_status(char* output,unsigned capacity);
 }

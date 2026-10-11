@@ -577,6 +577,10 @@ public:
 	void set_coopnet_guest(bool value) { m_coopnet_guest = value; }
 	bool is_coopnet_guest() const { return m_coopnet_guest; }
     bool is_coopnet_downed() const { return m_coopnet_downed; }
+    const Fvector& coopnet_death_position() const { return m_coopnet_death_position; }
+    float coopnet_death_yaw() const { return m_coopnet_death_yaw; }
+    float coopnet_death_pitch() const { return m_coopnet_death_pitch; }
+    void coopnet_orbit_death(float yaw,float pitch);
     void coopnet_down();
     void coopnet_revive(const Fvector& position);
     void coopnet_place(const Fvector& position,const Fvector& velocity);
@@ -601,6 +605,8 @@ protected:
 	bool m_coopnet_guest = false;
     bool m_coopnet_owner_movement=false;
     bool m_coopnet_downed = false;
+    Fvector m_coopnet_death_position = {0,0,0};
+    float m_coopnet_death_yaw=0,m_coopnet_death_pitch=.18f;
     bool m_coopnet_native_prediction=false;
     Fvector m_coopnet_view_correction = {0,0,0};
 	u16 m_coopnet_buttons = 0;

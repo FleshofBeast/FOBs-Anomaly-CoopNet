@@ -2403,6 +2403,28 @@ bool world_baseline_loaded(const char* name) {
     return options.size()>length && !strncmp(options.c_str(),name,length) && options.c_str()[length]=='/';
 }
 bool local_actor_downed() { return g_actor && g_actor->is_coopnet_downed(); }
+bool capture_death_camera(float* position,float* rotation) {
+    if(!position || !rotation || !g_actor || !g_actor->is_coopnet_downed()) return false;
+    for(unsigned axis=0;axis<3;++axis) position[axis]=g_actor->coopnet_death_position()[axis];
+    rotation[0]=g_actor->coopnet_death_pitch();rotation[1]=g_actor->coopnet_death_yaw();rotation[2]=0;
+    return true;
+}
+void orbit_death_camera(float yaw,float pitch) {if(g_actor) g_actor->coopnet_orbit_death(yaw,pitch);}
+bool exercise_death_orbit_probe() {
+    if(!strstr(Core.Params,"-coop_engine_fixture") || !g_actor || !g_actor->is_coopnet_downed() || g_actor->g_Alive()) return false;
+    const auto physics=capture_body_physics(g_actor);
+    if(physics.elements.empty() || g_actor->character_physics_support()->movement()->CharacterExist()) return false;
+    float before[3],angles[3],after[3],rotated[3];
+    if(!capture_death_camera(before,angles)) return false;
+    const Fvector corpse=g_actor->Position();
+    orbit_death_camera(.35f,.1f);
+    if(!capture_death_camera(after,rotated)) return false;
+    for(unsigned axis=0;axis<3;++axis) if(before[axis]!=after[axis] || corpse[axis]!=g_actor->Position()[axis]) return false;
+    if(fabsf(angle_normalize_signed(rotated[1]-angles[1])-.35f)>.001f) return false;
+    Render->Screenshot();
+    Msg("* CoopNet death orbit verified: anchor %.3f %.3f %.3f native ragdoll elements %u",before[0],before[1],before[2],static_cast<unsigned>(physics.elements.size()));
+    return true;
+}
 bool down_actor(std::uint16_t object) {
     if (!g_pGameLevel || !g_pGameLevel->bReady) return false;
     auto* actor=smart_cast<CActor*>(Level().Objects.net_Find(object));
@@ -2421,7 +2443,7 @@ bool respawn_actor(std::uint16_t object,std::uint32_t level,const float* positio
     const auto node=ai().level_graph().vertex(actor->ai_location().level_vertex_id(),target);
     if (!ai().level_graph().valid_vertex_id(node)) return false;
     if (actor==g_actor) local_world_hits.clear();
-    actor->coopnet_revive(target); return true;
+    actor->coopnet_revive(target); return !actor->is_coopnet_downed();
 }
 bool capture_actor_condition(std::uint16_t object, ActorConditionState& state) {
     if (!g_pGameLevel || !g_pGameLevel->bReady) return false;

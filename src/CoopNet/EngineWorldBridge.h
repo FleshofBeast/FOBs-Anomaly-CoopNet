@@ -100,6 +100,9 @@ bool apply_world_object(std::uint64_t session,std::uint64_t anchor,std::uint64_t
     const float* position,const float* rotation,float health,const std::vector<coopnet::WorldAnimation>& animations={},
     std::uint8_t zone_state=255,std::uint32_t zone_time=0,std::uint64_t killer=0,bool killer_player=false,const coopnet::WorldPhysics& physics={});
 bool world_level_is_replica();
+bool capture_death_camera(float* position,float* rotation);
+void orbit_death_camera(float yaw,float pitch);
+bool exercise_death_orbit_probe();
 // Development migration: retain joined-world identity while restoring local native simulation.
 bool guest_native_world();
 bool restore_personal_quests();

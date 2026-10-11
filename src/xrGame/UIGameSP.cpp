@@ -37,6 +37,8 @@ class CCoopRespawnDialog : public CUIDialogWnd,public CUIWndCallback {
     ui_shader panel_shader;
     CUIStatic* status;
     std::vector<engine_coopnet::SpectatorPlayer> roster;
+    bool orbit_dragging=false;
+    float orbit_x=0,orbit_y=0;
     void xr_stdcall Select(CUIWindow*,void*) {
         const auto index=players->GetSelectedIDX();
         if (index<roster.size() && roster[index].alive) engine_coopnet::select_spectator(roster[index].entity,roster[index].generation);
@@ -57,7 +59,7 @@ public:
         SetWndPos(Fvector2().set(24,180)); SetWndSize(Fvector2().set(310,390));
         auto* title=xr_new<CUIStatic>(); title->SetAutoDelete(true); AttachChild(title);
         title->SetWndPos(Fvector2().set(18,16)); title->SetWndSize(Fvector2().set(274,32));
-        title->TextItemControl()->SetFont(UI().Font().pFontLetterica18Russian); title->TextItemControl()->SetText("Spectate teammates");
+        title->TextItemControl()->SetFont(UI().Font().pFontLetterica18Russian); title->TextItemControl()->SetText("You died - Respawn");
         status=xr_new<CUIStatic>(); status->SetAutoDelete(true); AttachChild(status);
         status->SetWndPos(Fvector2().set(18,300)); status->SetWndSize(Fvector2().set(274,80));
         status->TextItemControl()->SetFont(UI().Font().pFontLetterica16Russian); status->TextItemControl()->SetTextComplexMode(true);
@@ -98,15 +100,28 @@ public:
                 Msg("* CoopNet spectator UI probe: player selection and A/D cycle passed"); break;
             }
         }
-        const char* text=engine_coopnet::spectator_target() ? "A / D: switch player\nEnter: respawn at this player\nEsc: main menu" : "Click a living player's name to spectate.\nA / D: select player\nWaiting if no teammates are alive.";
+        const char* text=engine_coopnet::spectator_target() ? "Right-drag / arrows: orbit death location\nA / D: choose teammate\nEnter: respawn at this player" : "Right-drag / arrows: orbit death location\nChoose a living teammate to respawn.\nEsc: main menu";
         status->TextItemControl()->SetText(text);
         CUIDialogWnd::Update();
     }
     bool OnKeyboardAction(int key,EUIMessages action) override {
+        if(action==WINDOW_KEY_PRESSED || action==WINDOW_KEY_HOLD) {
+            if(key==DIK_LEFT || key==DIK_RIGHT) {engine_coopnet::orbit_death_camera(key==DIK_LEFT ? -.06f : .06f,0);return true;}
+            if(key==DIK_UP || key==DIK_DOWN) {engine_coopnet::orbit_death_camera(0,key==DIK_UP ? -.04f : .04f);return true;}
+        }
         if (action==WINDOW_KEY_PRESSED && key==DIK_ESCAPE) { engine_coopnet::clear_spectator(); HideDialog(); MainMenu()->Activate(true); return true; }
         if (action==WINDOW_KEY_PRESSED && (key==DIK_A || key==DIK_D)) { Cycle(key==DIK_A ? -1 : 1); return true; }
         if (action==WINDOW_KEY_PRESSED && (key==DIK_RETURN || key==DIK_NUMPADENTER)) { if (engine_coopnet::spectator_target()) engine_coopnet::request_respawn(); return true; }
         return CUIDialogWnd::OnKeyboardAction(key,action);
+    }
+    bool OnMouseAction(float x,float y,EUIMessages action) override {
+        if(action==WINDOW_RBUTTON_DOWN) {orbit_dragging=true;orbit_x=x;orbit_y=y;return true;}
+        if(action==WINDOW_RBUTTON_UP) {orbit_dragging=false;return true;}
+        if(action==WINDOW_MOUSE_MOVE && orbit_dragging) {
+            engine_coopnet::orbit_death_camera((x-orbit_x)*.008f,(y-orbit_y)*.006f);
+            orbit_x=x;orbit_y=y;return true;
+        }
+        return CUIDialogWnd::OnMouseAction(x,y,action);
     }
 };
 }

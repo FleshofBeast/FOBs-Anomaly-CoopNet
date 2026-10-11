@@ -197,6 +197,8 @@ struct Session {
     std::string world_save;
     std::map<coopnet::Identity,std::pair<std::uint32_t,std::uint64_t>> world_sent;
     std::uint32_t world_tick=0;
+    std::uint32_t checkpoint_probe_tick=0;
+    bool checkpoint_probe_complete=false;
     std::uint32_t zone_level=0;
     std::map<std::uint16_t,std::pair<std::uint64_t,std::uint8_t>> zone_states;
     unsigned world_updates=0;
@@ -476,9 +478,9 @@ void publish_world(Session& current) {
         current.region_participants=std::move(present);
         // Capture only in the isolated native acceptance fixture. Native
         // delegation remains inactive until full offline-state restoration.
-        static bool checkpoint_probe_complete=false;
-        if(!checkpoint_probe_complete && current.tick>100 && current.tick%30==0 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
+        if(!current.checkpoint_probe_complete && current.tick>100 && current.tick-current.checkpoint_probe_tick>=30 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
             strstr(GetCommandLineA(),"-coop_native_acceptance_probe")) {
+            current.checkpoint_probe_tick=current.tick;
             coopnet::NativeRegionCheckpoint checkpoint,decoded;
             const auto key=regions.key_at(region_local.level,{region_local.position[0],region_local.position[1],region_local.position[2]});
             if(capture_native_region_checkpoint(key,regions.width(),checkpoint) && !checkpoint.objects.empty()) {
@@ -487,7 +489,9 @@ void publish_world(Session& current) {
                 const auto children=std::count_if(decoded.objects.begin(),decoded.objects.end(),[](const coopnet::NativeRegionObject& object){return object.parent!=0xffff;});
                 Msg("* CoopNet native checkpoint capture verified: level %u objects %u children %u bytes %u",key.level,
                     static_cast<unsigned>(decoded.objects.size()),static_cast<unsigned>(children),static_cast<unsigned>(bytes.size()));
-                checkpoint_probe_complete=true;
+                current.checkpoint_probe_complete=true;
+            } else {
+                Msg("! CoopNet native checkpoint probe pending: level %u tick %u",key.level,current.tick);
             }
         }
     }
@@ -687,7 +691,7 @@ void exercise_respawn_probe(Session& current,double elapsed) {
     if (!current.respawn_probe || !current.world_probe) return;
     if (current.mode==coopnet::Mode::Client) {
         LocalActorPose local;
-        if (!current.respawn_probe_local_death_checked && current.client.baseline_acknowledged() && capture_local_actor(local) && !player_downed()) {
+        if (!guest_native_world() && !current.respawn_probe_local_death_checked && current.client.baseline_acknowledged() && capture_local_actor(local) && !player_downed()) {
             if (down_actor(local.object) || player_downed()) throw std::runtime_error("Guest accepted an unconfirmed local death");
             current.respawn_probe_local_death_checked=true;
             Msg("* CoopNet respawn probe: guest local death ignored until host confirmation");
@@ -698,6 +702,7 @@ void exercise_respawn_probe(Session& current,double elapsed) {
                 const auto players=spectator_players(); bool selected=false;
                 for (const auto& player:players) if (player.alive) { selected=select_spectator(player.entity,player.generation); break; }
                 float position[3],rotation[3];
+                if(!exercise_death_orbit_probe()) throw std::runtime_error("Guest death ragdoll or anchored orbit failed");
                 if (!selected || !spectator_pose(position,rotation) || !request_respawn()) throw std::runtime_error("Guest spectator selection or targeted respawn failed");
                 current.respawn_probe_phase=1; Msg("* CoopNet respawn probe: guest requested revival");
             }
@@ -728,6 +733,7 @@ void exercise_respawn_probe(Session& current,double elapsed) {
         const auto players=spectator_players(); bool selected=false;
         for (const auto& player:players) if (player.alive) { selected=select_spectator(player.entity,player.generation); break; }
         float position[3],rotation[3];
+        if(!exercise_death_orbit_probe()) throw std::runtime_error("Host death ragdoll or anchored orbit failed");
         if (!selected || !spectator_pose(position,rotation)) throw std::runtime_error("Host spectator selection failed");
         if (!request_respawn()) throw std::runtime_error("Host respawn at guest failed");
         current.respawn_probe_phase=3; current.respawn_probe_wait=0;
@@ -2091,20 +2097,7 @@ bool select_spectator(unsigned long long entity,unsigned generation) {
 void clear_spectator() { if (session) { session->spectated_actor=0; session->spectated_generation=0; } }
 unsigned long long spectator_target() { return session ? session->spectated_actor : 0; }
 bool spectator_pose(float* position,float* rotation) {
-    if (!position || !rotation || !player_downed() || !session->spectated_actor) return false;
-    bool valid=false;
-    for (const auto& player:spectator_players()) if (player.entity==session->spectated_actor && player.generation==session->spectated_generation && player.alive) valid=true;
-    if (!valid) { clear_spectator(); return false; }
-    if (session->mode==coopnet::Mode::Host) {
-        for (const auto& guest:session->guests) if (guest.second.entity==session->spectated_actor) {
-            LocalActorPose pose; if (!capture_guest_actor(guest.second.object,pose)) return false;
-            for (unsigned axis=0;axis<3;++axis) { position[axis]=pose.position[axis]; rotation[axis]=pose.rotation[axis]; } return true;
-        }
-    } else {
-        coopnet::ActorSnapshot pose; if (!session->client.actors().sample(session->spectated_actor,session->server_us,pose)) return false;
-        for (unsigned axis=0;axis<3;++axis) { position[axis]=pose.position[axis]; rotation[axis]=pose.rotation[axis]; } return true;
-    }
-    return false;
+    return player_downed() && capture_death_camera(position,rotation);
 }
 bool can_respawn() {
     LocalActorPose local;
