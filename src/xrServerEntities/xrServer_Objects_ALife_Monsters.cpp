@@ -2251,8 +2251,11 @@ CSE_Abstract* CSE_ALifeOnlineOfflineGroup::init()
 CSE_ALifeOnlineOfflineGroup::~CSE_ALifeOnlineOfflineGroup()
 {
 #ifdef XRGAME_EXPORTS
-	while (!m_members.empty())
-		unregister_member((*m_members.begin()).first);
+    // STATE_Read retains member IDs before the group is registered. Detached
+    // save-validation copies have no simulator and own no live memberships.
+    if(m_alife_simulator) {
+        while (!m_members.empty()) unregister_member((*m_members.begin()).first);
+    } else m_members.clear();
 	xr_delete(m_brain);
 #endif
 }

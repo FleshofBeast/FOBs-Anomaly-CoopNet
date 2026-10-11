@@ -23,7 +23,12 @@ CALifeObjectRegistry::~CALifeObjectRegistry()
 		(*I).second->on_unregister();
 
 	for (I = B; I != E; ++I)
+	{
+#ifdef XRGAME_EXPORTS
+        engine_coopnet::alife_lifetime_ended(I->second);
+#endif
 		xr_delete((*I).second);
+	}
 }
 
 void CALifeObjectRegistry::save(IWriter& memory_stream, CSE_ALifeDynamicObject* object, u32& object_count)
@@ -138,6 +143,9 @@ void CALifeObjectRegistry::load(IReader& file_stream)
 	Msg("* Loading objects...");
 	R_ASSERT2(file_stream.find_chunk(OBJECT_CHUNK_DATA), "Can't find chunk OBJECT_CHUNK_DATA!");
 
+#ifdef XRGAME_EXPORTS
+    for(const auto& entry:m_objects) engine_coopnet::alife_lifetime_ended(entry.second);
+#endif
 	m_objects.clear();
 
 	u32 count = file_stream.r_u32();

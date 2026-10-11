@@ -96,6 +96,9 @@ bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& ob
 // this does not grant a lease or enable guest simulation.
 bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width,
     coopnet::NativeRegionCheckpoint& checkpoint);
+bool capture_offline_region_checkpoint(const coopnet::RegionKey& key,double width,
+    coopnet::NativeRegionCheckpoint& checkpoint);
+bool exercise_offline_checkpoint_probe(double width);
 bool apply_world_object(std::uint64_t session,std::uint64_t anchor,std::uint64_t incarnation,
     const float* position,const float* rotation,float health,const std::vector<coopnet::WorldAnimation>& animations={},
     std::uint8_t zone_state=255,std::uint32_t zone_time=0,std::uint64_t killer=0,bool killer_player=false,const coopnet::WorldPhysics& physics={});

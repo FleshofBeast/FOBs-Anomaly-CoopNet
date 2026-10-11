@@ -7,6 +7,9 @@
 ////////////////////////////////////////////////////////////////////////////
 
 #pragma once
+#ifdef XRGAME_EXPORTS
+#include "../CoopNet/NativeALifeLifetime.h"
+#endif
 
 IC void CALifeObjectRegistry::add(CSE_ALifeDynamicObject* object)
 {
@@ -19,6 +22,9 @@ IC void CALifeObjectRegistry::add(CSE_ALifeDynamicObject* object)
 	}
 
 	m_objects.insert(std::make_pair(object->ID, object));
+#ifdef XRGAME_EXPORTS
+    engine_coopnet::alife_lifetime_started(object);
+#endif
 }
 
 IC void CALifeObjectRegistry::remove(const ALife::_OBJECT_ID& id, bool no_assert)
@@ -30,6 +36,9 @@ IC void CALifeObjectRegistry::remove(const ALife::_OBJECT_ID& id, bool no_assert
 		return;
 	}
 
+#ifdef XRGAME_EXPORTS
+    engine_coopnet::alife_lifetime_ended(I->second);
+#endif
 	m_objects.erase(I);
 }
 

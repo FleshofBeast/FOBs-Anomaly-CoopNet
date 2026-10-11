@@ -39,6 +39,7 @@ $appliedHits=[regex]::Matches($logs.host,"CoopNet shared guest hit applied: targ
 if($appliedHits.Count -ne 1 -or [double]$appliedHits[0].Groups[2].Value -gt 0){throw 'Guest hit did not kill the shared enemy exactly once on the host'}
 if ($Acceptance) {
  if($logs.host -notmatch 'CoopNet native checkpoint capture verified: level \d+ objects [1-9]\d* children \d+ bytes [1-9]\d*'){throw 'Live native region checkpoint round-trip missing'}
+ if($logs.host -notmatch 'CoopNet separate-map offline checkpoint verified: host level \d+ captured level \d+ objects [1-9]\d* bytes [1-9]\d* stable ALife lifetimes'){throw 'Separate-map offline checkpoint capture missing'}
  foreach($marker in @('CoopNet dynamic anomaly probe: host spawned native','CoopNet dynamic anomaly probe: host removed native')) {if(!$logs.host.Contains($marker)){throw "Host dynamic anomaly check missing: $marker"}}
  if(!$logs.guest.Contains('CoopNet dynamic anomaly probe: guest native removal verified')){throw 'Guest dynamic anomaly removal missing'}
  if(!$logs.guest.Contains('CoopNet dynamic anomaly probe: retained lifetime recovered')){throw 'Guest native lifetime recovery missing'}

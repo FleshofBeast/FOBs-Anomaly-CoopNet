@@ -199,6 +199,7 @@ struct Session {
     std::uint32_t world_tick=0;
     std::uint32_t checkpoint_probe_tick=0;
     bool checkpoint_probe_complete=false;
+    bool offline_checkpoint_probe_complete=false;
     std::uint32_t zone_level=0;
     std::map<std::uint16_t,std::pair<std::uint64_t,std::uint8_t>> zone_states;
     unsigned world_updates=0;
@@ -478,7 +479,7 @@ void publish_world(Session& current) {
         current.region_participants=std::move(present);
         // Capture only in the isolated native acceptance fixture. Native
         // delegation remains inactive until full offline-state restoration.
-        if(!current.checkpoint_probe_complete && current.tick>100 && current.tick-current.checkpoint_probe_tick>=30 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
+        if((!current.checkpoint_probe_complete || !current.offline_checkpoint_probe_complete) && current.tick>100 && current.tick-current.checkpoint_probe_tick>=30 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
             strstr(GetCommandLineA(),"-coop_native_acceptance_probe")) {
             current.checkpoint_probe_tick=current.tick;
             coopnet::NativeRegionCheckpoint checkpoint,decoded;
@@ -490,6 +491,7 @@ void publish_world(Session& current) {
                 Msg("* CoopNet native checkpoint capture verified: level %u objects %u children %u bytes %u",key.level,
                     static_cast<unsigned>(decoded.objects.size()),static_cast<unsigned>(children),static_cast<unsigned>(bytes.size()));
                 current.checkpoint_probe_complete=true;
+                if(!current.offline_checkpoint_probe_complete) current.offline_checkpoint_probe_complete=exercise_offline_checkpoint_probe(regions.width());
             } else {
                 Msg("! CoopNet native checkpoint probe pending: level %u tick %u",key.level,current.tick);
             }
