@@ -23,8 +23,9 @@ inline bool valid_native_region_checkpoint(const NativeRegionCheckpoint& checkpo
         if(object.object==0xffff || !object.incarnation || object.spawn.empty() || object.spawn.size()>16384 ||
             object.section.empty() || object.section.size()>128 ||
             seen.count(object.object) || (object.parent!=0xffff && !seen.count(object.parent))) return false;
+        if(object.section.front()=='.' || object.section.find("..")!=std::string::npos) return false;
         for(unsigned char c:object.section)
-            if(!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_' || c=='-')) return false;
+            if(!((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c=='_' || c=='-' || c=='.')) return false;
         seen.insert(object.object);
         size+=17+object.section.size()+object.spawn.size();
         if(size>region_checkpoint_limit) return false;

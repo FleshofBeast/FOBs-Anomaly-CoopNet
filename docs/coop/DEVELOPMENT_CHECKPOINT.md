@@ -80,3 +80,33 @@ checkpoint capture now logs every guard and failure exit. Next run the main
 native world acceptance with these diagnostics, repair capture, then implement
 offline capture, validated restore, lease integration and independent map
 ownership. The native-world harness also guards the process shutdown race.
+
+The resumed main native test _build/checkpoint-exit-diagnostics-acceptance.log,
+fixture _build/native-world-a931a8f2ed204d9e9631a55335725baf, failed its checkpoint
+gate. Capture now specifically reports "checkpoint envelope" after native
+record round-trips succeed. Record-level diagnostics are the next increment;
+build _build/checkpoint-record-diagnostics-build.log, session 38345, was launched
+after that fixture closed. Run the native acceptance against this build to
+identify invalid record metadata, repair the cause and repeat acceptance before
+starting validated restore. Delegation is still inactive.
+
+Record-level diagnostics completed in _build/checkpoint-record-diagnostics-acceptance.log,
+fixture _build/native-world-c4fa9b36612e41b382cf97387743c57a. The envelope rejected
+valid native ammunition sections containing decimal dots, including
+ammo_5.45x39_ap and ammo_5.45x39_fmj. The validator now permits decimal dots while
+rejecting leading dots, double dots and path separators, consistent with the
+existing inventory section rules. Regression tests round-trip a real ammunition
+section and preserve malformed-name rejection. Build
+_build/checkpoint-ammunition-build.log (session 76560) and portable suites
+_build/checkpoint-ammunition-tests.log (session 61217) are running. Verify both
+handles, then repeat native world acceptance to prove capture succeeds. Do not
+restart a still-running handle. These edits are not yet committed or pushed.
+
+The ammunition correction build completed successfully and all 24 portable
+suites passed. Live native acceptance is running in
+_build/checkpoint-ammunition-acceptance.log (session 56257). Confirm the native
+checkpoint capture success marker and final test result before calling capture
+verified. Source audit also established that CALifeObjectRegistry::save/get_object
+stores/loads both Spawn_Write and UPDATE_Write records, while this checkpoint
+schema retains only spawn bytes. Extend it to retain the native update packet
+and validate local spawn-plus-update round-trips before implementing restore.

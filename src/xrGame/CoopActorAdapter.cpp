@@ -958,7 +958,21 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
         if(!valid) return reject("native spawn round-trip",object->ID());
         checkpoint.objects.push_back(std::move(record));
     }
-    if(!coopnet::valid_native_region_checkpoint(checkpoint)) return reject("checkpoint envelope",0xffff);
+    if(!coopnet::valid_native_region_checkpoint(checkpoint)) {
+        if(strstr(Core.Params,"-coop_engine_fixture") && strstr(Core.Params,"-coop_native_acceptance_probe")) {
+            std::set<u16> parents;
+            for(const auto& record:checkpoint.objects) {
+                auto standalone=record;standalone.parent=0xffff;
+                coopnet::NativeRegionCheckpoint single;single.key=key;single.objects.push_back(std::move(standalone));
+                if(!coopnet::valid_native_region_checkpoint(single) || parents.count(record.object) ||
+                    (record.parent!=0xffff && !parents.count(record.parent)))
+                    Msg("! CoopNet checkpoint invalid record: object %u parent %u incarnation %llu section %s bytes %u",
+                        record.object,record.parent,record.incarnation,record.section.c_str(),static_cast<unsigned>(record.spawn.size()));
+                parents.insert(record.object);
+            }
+        }
+        return reject("checkpoint envelope",0xffff);
+    }
     output=std::move(checkpoint);return true;
 }
 bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& objects) {

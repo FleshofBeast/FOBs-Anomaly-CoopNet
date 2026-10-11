@@ -21,6 +21,13 @@ int main() {
     bad=original;bad.objects[1].spawn.resize(16385);require(!valid_native_region_checkpoint(bad));
     bad=original;bad.objects[1].spawn.clear();require(!valid_native_region_checkpoint(bad));
     bad=original;bad.objects[1].section="../wpn_pm";require(!valid_native_region_checkpoint(bad));
+    bad=original;bad.objects[1].section="ammo_5.45x39_ap";
+    NativeRegionCheckpoint ammunition;
+    require(decode_native_region_checkpoint(encode_native_region_checkpoint(bad),ammunition));
+    require(ammunition.objects[1].section=="ammo_5.45x39_ap");
+    bad=original;bad.objects[1].section="ammo..ap";require(!valid_native_region_checkpoint(bad));
+    bad=original;bad.objects[1].section=".ammo";require(!valid_native_region_checkpoint(bad));
+    bad=original;bad.objects[1].section="ammo\\ap";require(!valid_native_region_checkpoint(bad));
     bad=original;bad.objects[1].section.clear();require(!valid_native_region_checkpoint(bad));
     NativeRegionCheckpoint empty{{12,0,0},{}};require(decode_native_region_checkpoint(encode_native_region_checkpoint(empty),decoded));
     NativeRegionCheckpoint large{{12,0,0},{}};
