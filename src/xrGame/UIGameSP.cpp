@@ -100,7 +100,7 @@ public:
                 Msg("* CoopNet spectator UI probe: player selection and A/D cycle passed"); break;
             }
         }
-        const char* text=engine_coopnet::spectator_target() ? "Right-drag / arrows: orbit death location\nA / D: choose teammate\nEnter: respawn at this player" : "Right-drag / arrows: orbit death location\nChoose a living teammate to respawn.\nEsc: main menu";
+        const char* text=engine_coopnet::spectator_target() ? "Right-drag / arrows: orbit death location\\nA / D: choose teammate\\nEnter: respawn at this player" : "Right-drag / arrows: orbit death location\\nChoose a living teammate to respawn.\\nEsc: main menu";
         status->TextItemControl()->SetText(text);
         CUIDialogWnd::Update();
     }

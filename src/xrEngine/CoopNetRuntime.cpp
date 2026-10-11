@@ -1972,8 +1972,14 @@ void command(const char* name, const char* arguments) {
                 owner->player_vitals[vitals.actor]=vitals;
                 const auto* actor=owner->client.actors().find(vitals.actor);
                 if(actor && actor->player==owner->client.session().welcome().player) owner->exit_condition={vitals.health,vitals.power,vitals.radiation};
+                ActorConditionState condition{vitals.health,vitals.power,vitals.radiation};
+                const bool native=guest_native_world();
+                if(native && vitals.health<=0) {
+                    LocalActorPose local;
+                    if(capture_local_actor(local) && capture_actor_condition(local.object,condition)) condition.health=0;
+                }
                 if (actor && actor->player==owner->client.session().welcome().player &&
-                    !guest_native_world() && apply_local_condition(vitals.level,{vitals.health,vitals.power,vitals.radiation})) {
+                    (!native || vitals.health<=0) && apply_local_condition(vitals.level,condition)) {
                     ++owner->condition_corrections;
                     if (vitals.tick%25==0) Msg("* CoopNet authoritative guest health applied: %.3f",vitals.health);
                 }

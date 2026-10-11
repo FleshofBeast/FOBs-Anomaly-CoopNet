@@ -31,7 +31,7 @@ foreach($role in @('host','guest')) {
     $file=Get-ChildItem "$fixtureRoot/$role/appdata/logs" -Filter '*.log' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
     $logs[$role]=Get-Content $file.FullName -Raw
     if($logs[$role] -match 'FATAL ERROR|UnhandledFilter|! CoopNet update failed:'){throw "$role death runtime failed"}
-    foreach($marker in @('CoopNet death orbit verified:','CoopNet player respawned:','CoopNet Respawn dialog opened','CoopNet session stopped')) {
+    foreach($marker in @('CoopNet death orbit verified:','CoopNet player respawned:','CoopNet revival movement capsule verified:','CoopNet Respawn dialog opened','CoopNet session stopped')) {
         if(!$logs[$role].Contains($marker)){throw "$role missing: $marker"}
     }
     if(!(Get-ChildItem "$fixtureRoot/$role/appdata/screenshots" -File -ErrorAction SilentlyContinue)){throw "$role death screenshots missing"}

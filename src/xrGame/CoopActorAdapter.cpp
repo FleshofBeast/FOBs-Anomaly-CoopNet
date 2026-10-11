@@ -887,15 +887,19 @@ void display_party_status(unsigned stage,unsigned present,unsigned required,std:
 }
 bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width,
     coopnet::NativeRegionCheckpoint& output) {
-    LocalActorPose local;
-    if(!collect_world_objects || !capture_local_actor(local) || world_level_is_replica() || local.level!=key.level ||
-        !coopnet::valid_region(key) || !std::isfinite(width) || width<10 || width>4096 || !Level().Server) return false;
-    coopnet::NativeRegionCheckpoint checkpoint;checkpoint.key=key;
     const auto reject=[](const char* reason,u16 object) {
         if(strstr(Core.Params,"-coop_engine_fixture") && strstr(Core.Params,"-coop_native_acceptance_probe"))
             Msg("! CoopNet native checkpoint capture rejected: %s object %u",reason,object);
         return false;
     };
+    LocalActorPose local;
+    if(!collect_world_objects) return reject("world collection inactive",0xffff);
+    if(!capture_local_actor(local)) return reject("local actor unavailable",0xffff);
+    if(world_level_is_replica()) return reject("replica cannot capture authority",local.object);
+    if(local.level!=key.level) return reject("level mismatch",local.object);
+    if(!coopnet::valid_region(key) || !std::isfinite(width) || width<10 || width>4096) return reject("invalid grid",local.object);
+    if(!Level().Server) return reject("native server unavailable",local.object);
+    coopnet::NativeRegionCheckpoint checkpoint;checkpoint.key=key;
     std::vector<CGameObject*> pending;
     std::set<u16> selected;
     std::size_t checkpoint_bytes=18;
@@ -909,17 +913,17 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
         auto* server=Level().Server->ID_to_entity(object->ID());
         if(!server || server->ID_Parent!=0xffff) return reject("root server binding",object->ID());
         for(unsigned axis=0;axis<3;++axis)
-            if(!std::isfinite(object->Position()[axis]) || std::abs(object->Position()[axis])>1000000.f) return false;
+            if(!std::isfinite(object->Position()[axis]) || std::abs(object->Position()[axis])>1000000.f) return reject("invalid root position",object->ID());
         const auto region=coopnet::region_at(local.level,{object->Position().x,object->Position().y,object->Position().z},width);
         if(region==key) {pending.push_back(object);selected.insert(object->ID());}
     }
-    if(pending.size()>4096) return false;
+    if(pending.size()>4096) return reject("root capacity",0xffff);
     for(std::size_t index=0;index<pending.size();++index) {
         auto* object=pending[index];
         auto* server=Level().Server->ID_to_entity(object->ID());
         auto found=world_objects.find(object);
         if(!server || found==world_objects.end() || object->getDestroy() || object->cast_actor() ||
-            private_quest_followers.count(object->ID()) || pending.size()>4096) return false;
+            private_quest_followers.count(object->ID()) || pending.size()>4096) return reject("selected object unavailable",object->ID());
         for(const auto child:server->children) {
             auto* native=smart_cast<CGameObject*>(Level().Objects.net_Find(child));
             auto* child_server=Level().Server->ID_to_entity(child);
@@ -940,12 +944,12 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
         record.object=object->ID();record.parent=server->ID_Parent;record.incarnation=found->second.incarnation;
         record.section=object->cNameSect().c_str();
         checkpoint_bytes+=17+record.section.size()+spawn.B.count;
-        if(checkpoint_bytes>coopnet::region_checkpoint_limit) return false;
+        if(checkpoint_bytes>coopnet::region_checkpoint_limit) return reject("checkpoint byte capacity",object->ID());
         record.spawn.assign(spawn.B.data,spawn.B.data+spawn.B.count);
         // Round-trip locally produced records before retaining a checkpoint.
         // Do not reuse this as an unchecked parser for worker-supplied bytes.
         auto* verify=F_entity_Create(record.section.c_str());
-        if(!verify) return false;
+        if(!verify) return reject("native class unavailable",object->ID());
         spawn.r_pos=0;
         const bool valid=verify->Spawn_Read(spawn) && spawn.r_eof() && verify->ID==record.object &&
             verify->ID_Parent==record.parent && xr_strcmp(verify->s_name.c_str(),record.section.c_str())==0 &&
@@ -954,7 +958,7 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
         if(!valid) return reject("native spawn round-trip",object->ID());
         checkpoint.objects.push_back(std::move(record));
     }
-    if(!coopnet::valid_native_region_checkpoint(checkpoint)) return false;
+    if(!coopnet::valid_native_region_checkpoint(checkpoint)) return reject("checkpoint envelope",0xffff);
     output=std::move(checkpoint);return true;
 }
 bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& objects) {
@@ -2443,7 +2447,11 @@ bool respawn_actor(std::uint16_t object,std::uint32_t level,const float* positio
     const auto node=ai().level_graph().vertex(actor->ai_location().level_vertex_id(),target);
     if (!ai().level_graph().valid_vertex_id(node)) return false;
     if (actor==g_actor) local_world_hits.clear();
-    actor->coopnet_revive(target); return !actor->is_coopnet_downed();
+    actor->coopnet_revive(target);
+    const bool restored=!actor->is_coopnet_downed() && actor->g_Alive() &&
+        actor->character_physics_support()->movement()->CharacterExist();
+    if(restored && strstr(Core.Params,"-coop_engine_fixture")) Msg("* CoopNet revival movement capsule verified: object %u",object);
+    return restored;
 }
 bool capture_actor_condition(std::uint16_t object, ActorConditionState& state) {
     if (!g_pGameLevel || !g_pGameLevel->bReady) return false;

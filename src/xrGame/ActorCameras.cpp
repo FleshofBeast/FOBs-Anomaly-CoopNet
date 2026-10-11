@@ -483,7 +483,7 @@ void CActor::cam_Update(float dt, float fFOV)
     float position[3],rotation[3];
     if (this==Level().CurrentEntity() && engine_coopnet::spectator_pose(position,rotation)) {
         Fvector anchor; anchor.set(position[0],position[1]+.65f,position[2]);
-        Fvector backward; backward.setHP(-rotation[1]+PI,-rotation[0]);
+        Fvector backward; backward.setHP(-rotation[1]+PI,rotation[0]);
         collide::rq_result hit;
         const bool blocked=Level().ObjectSpace.RayPick(anchor,backward,3.5f,collide::rqtStatic,hit,this);
         const float distance=blocked ? _max(.15f,hit.range-.2f) : 3.5f;

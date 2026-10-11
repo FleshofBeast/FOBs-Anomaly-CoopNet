@@ -1834,10 +1834,14 @@ void CActor::coopnet_revive(const Fvector& position)
     }
     conditions().reinit();
     character_physics_support()->in_NetDestroy();
+    Fmatrix transform=XFORM(); transform.c=position; ForceTransform(transform);
+    if(auto* skeleton=smart_cast<CSE_PHSkeleton*>(server)) {
+        skeleton->_flags.set(CSE_PHSkeleton::flSavedData,FALSE);
+        skeleton->saved_bones.bones.clear();
+    }
     character_physics_support()->in_NetSpawn(server);
     m_coopnet_downed=false;
     mstate_wishful=0; m_coopnet_buttons=0; NET_SavedAccel.set(0,0,0); NET_Jump=0;
-    Fmatrix transform=XFORM(); transform.c=position; ForceTransform(transform);
     character_physics_support()->movement()->SetVelocity(0,0,0);
     Msg("* CoopNet player respawned: object %u position %.3f %.3f %.3f",ID(),position.x,position.y,position.z);
 }
@@ -1845,7 +1849,7 @@ void CActor::coopnet_orbit_death(float yaw,float pitch)
 {
     if(!m_coopnet_downed || !std::isfinite(yaw) || !std::isfinite(pitch)) return;
     m_coopnet_death_yaw=angle_normalize_signed(m_coopnet_death_yaw+yaw);
-    m_coopnet_death_pitch+=pitch; clamp(m_coopnet_death_pitch,-1.1f,1.1f);
+    m_coopnet_death_pitch+=pitch; clamp(m_coopnet_death_pitch,-.1f,1.1f);
 }
 void CActor::coopnet_place(const Fvector& position,const Fvector& velocity)
 {

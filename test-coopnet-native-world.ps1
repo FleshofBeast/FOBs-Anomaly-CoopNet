@@ -14,7 +14,7 @@ try {
  while($watch.Elapsed.TotalSeconds -lt 150){foreach($process in $owned){if($process.HasExited){throw "Fixture exited early: $($process.Id) code $($process.ExitCode)"}};Start-Sleep -Milliseconds 500}
 } finally {
  $cleanupErrors=@()
- foreach($process in $owned){if(!$process.HasExited){$process.CloseMainWindow()|Out-Null;if(!$process.WaitForExit(30000)){Stop-Process -Id $process.Id;$cleanupErrors+='Owned fixture did not close normally'}}}
+ foreach($process in $owned){if(!$process.HasExited){$process.CloseMainWindow()|Out-Null;if(!$process.WaitForExit(30000)){$process.Refresh();if(!$process.HasExited){Stop-Process -Id $process.Id -ErrorAction SilentlyContinue;$cleanupErrors+='Owned fixture did not close normally'}}}}
  if($cleanupErrors.Count){Write-Warning ($cleanupErrors -join '; ')}
  foreach($path in $hashes.Keys){if((Get-FileHash $path).Hash -ne $hashes[$path]){throw 'Private source save was changed'}}
 }
