@@ -191,3 +191,11 @@ also reads its locally generated Spawn_Write record back through F_entity_Create
 and Spawn_Read, checking native ID, parent ID, section and exact client_data.
 An isolated native acceptance probe checks checkpoint envelope round-trip using
 live cell objects. It does not activate leases or prove restore/handoff.
+
+The first native run with the capture probe, fixture
+_build/native-world-0dccff673dfe4577be9707cb91415e6c, passed existing combat/world
+regression checks but produced no checkpoint capture success marker. Capture
+is therefore unverified. The acceptance harness now explicitly requires that
+marker, and fixture-only diagnostics identify rejected native bindings or
+save/spawn consumption. Do not treat the older regression pass as checkpoint
+acceptance or ownership-handoff evidence.

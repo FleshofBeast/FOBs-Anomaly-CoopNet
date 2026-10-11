@@ -891,6 +891,11 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
     if(!collect_world_objects || !capture_local_actor(local) || world_level_is_replica() || local.level!=key.level ||
         !coopnet::valid_region(key) || !std::isfinite(width) || width<10 || width>4096 || !Level().Server) return false;
     coopnet::NativeRegionCheckpoint checkpoint;checkpoint.key=key;
+    const auto reject=[](const char* reason,u16 object) {
+        if(strstr(Core.Params,"-coop_engine_fixture") && strstr(Core.Params,"-coop_native_acceptance_probe"))
+            Msg("! CoopNet native checkpoint capture rejected: %s object %u",reason,object);
+        return false;
+    };
     std::vector<CGameObject*> pending;
     std::set<u16> selected;
     std::size_t checkpoint_bytes=18;
@@ -902,7 +907,7 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
             private_quest_followers.count(object->ID())) continue;
         if(!smart_cast<CEntityAlive*>(object) && !smart_cast<CCustomZone*>(object) && !smart_cast<CInventoryBox*>(object)) continue;
         auto* server=Level().Server->ID_to_entity(object->ID());
-        if(!server || server->ID_Parent!=0xffff) return false;
+        if(!server || server->ID_Parent!=0xffff) return reject("root server binding",object->ID());
         for(unsigned axis=0;axis<3;++axis)
             if(!std::isfinite(object->Position()[axis]) || std::abs(object->Position()[axis])>1000000.f) return false;
         const auto region=coopnet::region_at(local.level,{object->Position().x,object->Position().y,object->Position().z},width);
@@ -919,15 +924,15 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
             auto* native=smart_cast<CGameObject*>(Level().Objects.net_Find(child));
             auto* child_server=Level().Server->ID_to_entity(child);
             if(!native || !child_server || child_server->ID_Parent!=object->ID() || native->H_Parent()!=object ||
-                !selected.insert(child).second) return false;
+                !selected.insert(child).second) return reject("child server binding",child);
             pending.push_back(native);
         }
         NET_Packet update;update.B.count=0;update.r_pos=0;
         object->net_Export(update);server->UPDATE_Read(update);
-        if(!update.r_eof()) return false;
+        if(!update.r_eof()) return reject("native update consumption",object->ID());
         NET_Packet saved;saved.B.count=0;saved.r_pos=0;
         object->net_Save(saved);server->load(saved);
-        if(!saved.r_eof()) return false;
+        if(!saved.r_eof()) return reject("native save consumption",object->ID());
         if(auto* item=smart_cast<CInventoryItem*>(object))
             if(auto* inventory=smart_cast<CSE_ALifeInventoryItem*>(server)) inventory->m_fCondition=item->GetCondition();
         NET_Packet spawn;server->Spawn_Write(spawn,TRUE);
@@ -946,7 +951,7 @@ bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width
             verify->ID_Parent==record.parent && xr_strcmp(verify->s_name.c_str(),record.section.c_str())==0 &&
             verify->client_data==server->client_data;
         F_entity_Destroy(verify);
-        if(!valid) return false;
+        if(!valid) return reject("native spawn round-trip",object->ID());
         checkpoint.objects.push_back(std::move(record));
     }
     if(!coopnet::valid_native_region_checkpoint(checkpoint)) return false;

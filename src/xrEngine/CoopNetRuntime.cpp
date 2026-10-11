@@ -477,7 +477,7 @@ void publish_world(Session& current) {
         // Capture only in the isolated native acceptance fixture. Native
         // delegation remains inactive until full offline-state restoration.
         static bool checkpoint_probe_complete=false;
-        if(!checkpoint_probe_complete && current.tick>100 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
+        if(!checkpoint_probe_complete && current.tick>100 && current.tick%30==0 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
             strstr(GetCommandLineA(),"-coop_native_acceptance_probe")) {
             coopnet::NativeRegionCheckpoint checkpoint,decoded;
             const auto key=regions.key_at(region_local.level,{region_local.position[0],region_local.position[1],region_local.position[2]});
