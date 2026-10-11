@@ -10,6 +10,14 @@ int main(int argc, char** argv) {
     try {
         if (argc != 3) throw std::invalid_argument("Usage: GnsSmoke host|client endpoint-or-port");
         GnsRuntime runtime;
+#ifdef _MSC_VER
+        char* simulated=nullptr;std::size_t simulated_size=0;
+        _dupenv_s(&simulated,&simulated_size,"COOPNET_TEST_WAN");
+        const bool simulate=simulated!=nullptr;std::free(simulated);
+#else
+        const bool simulate=std::getenv("COOPNET_TEST_WAN")!=nullptr;
+#endif
+        if (simulate) runtime.simulate_network(60,20.f,2.f);
         const bool host_mode = std::string(argv[1]) == "host";
         const bool timeout_mode = std::string(argv[1]) == "timeout";
         HostPump host; ClientPump client;

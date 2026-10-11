@@ -81,6 +81,7 @@ struct SActorMotions
 	SActorState m_climb;
 	SActorSprintState m_sprint;
 	void Create(IKinematicsAnimated* K);
+    bool ordinary(MotionID motion) const;
 };
 
 //vehicle anims

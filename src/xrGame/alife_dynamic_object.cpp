@@ -18,6 +18,7 @@
 #include "xrServer.h"
 #include "level.h"
 #include "map_manager.h"
+#include "../CoopNet/EngineActorBridge.h"
 
 void CSE_ALifeDynamicObject::on_spawn()
 {
@@ -157,7 +158,7 @@ void CSE_ALifeDynamicObject::try_switch_online()
 		return;
 	}
 
-	if (alife().graph().actor()->o_Position.distance_to(o_Position) > alife().online_distance())
+    if (engine_coopnet::nearest_guest_distance(&o_Position.x,m_tGraphID,alife().graph().actor()->o_Position.distance_to(o_Position)) > alife().online_distance())
 	{
 		on_failed_switch_online();
 		return;
@@ -177,7 +178,7 @@ void CSE_ALifeDynamicObject::try_switch_offline()
 		return;
 	}
 
-	if (alife().graph().actor()->o_Position.distance_to(o_Position) <= alife().offline_distance())
+    if (engine_coopnet::nearest_guest_distance(&o_Position.x,m_tGraphID,alife().graph().actor()->o_Position.distance_to(o_Position)) <= alife().offline_distance())
 		return;
 
 	alife().switch_offline(this);

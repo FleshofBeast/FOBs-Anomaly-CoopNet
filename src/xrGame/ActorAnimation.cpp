@@ -242,6 +242,25 @@ void SActorSprintState::Create(IKinematicsAnimated* K)
 	legs_jump_rs = K->ID_Cycle("norm_escape_rs_jump_00");
 }
 
+bool SActorMotions::ordinary(MotionID motion) const
+{
+    if (!motion.valid()) return false;
+    for (const auto* state:{&m_normal,&m_crouch}) {
+        for (const auto id:{state->legs_idle,state->legs_turn,state->jump_begin,state->jump_idle,
+            state->landing[0],state->landing[1],state->m_torso_idle,state->m_head_idle,
+            state->m_walk.legs_fwd,state->m_walk.legs_back,state->m_walk.legs_ls,state->m_walk.legs_rs,
+            state->m_run.legs_fwd,state->m_run.legs_back,state->m_run.legs_ls,state->m_run.legs_rs})
+            if (id.valid() && id==motion) return true;
+        for (const auto& torso:state->m_torso) {
+            for (const auto id:torso.moving) if (id.valid() && id==motion) return true;
+            if ((torso.zoom.valid() && torso.zoom==motion) || (torso.safemode.valid() && torso.safemode==motion)) return true;
+        }
+    }
+    for (const auto id:{m_sprint.legs_fwd,m_sprint.legs_ls,m_sprint.legs_rs,
+        m_sprint.legs_jump_fwd,m_sprint.legs_jump_ls,m_sprint.legs_jump_rs})
+        if (id.valid() && id==motion) return true;
+    return false;
+}
 void SActorMotions::Create(IKinematicsAnimated* V)
 {
 	m_dead_stop = V->ID_Cycle("norm_dead_stop_0");

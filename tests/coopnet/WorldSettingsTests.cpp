@@ -26,7 +26,8 @@ int main() {
     require(host.attach(1,std::move(link.second))); client.start(std::move(link.first),2,{10,20});
     unsigned views=0,clocks=0;
     client.set_world_rules_sink([&](std::uint32_t revision,const std::vector<WorldRule>& values) { require(revision==1 && values.size()==4096); ++views; });
-    client.set_world_clock_sink([&](const WorldClock&) { ++clocks; });
+    WorldClock directed;
+    client.set_world_clock_sink([&](const WorldClock& value) { directed=value;++clocks; });
     rules.clear(); for (unsigned i=0;i<4096;++i) rules.push_back({"alife/general/test_"+std::to_string(i),"0.75",2});
     require(host.publish_world_rules(1,rules));
     for (unsigned i=0;i<68;++i) { client.update(.01); host.update(.01); }
@@ -35,6 +36,15 @@ int main() {
     const auto player=client.session().welcome().player; require(host.assign_level(player,10,800)); host.update(.01); client.update(.01);
     require(client.acknowledge_level(10)); host.update(.01); require(host.publish_world_clock(clock)); client.update(.01); require(clocks==1);
     require(host.publish_world_clock(clock)); client.update(.01); require(clocks==1); // stale clock ignored
-    clock.level=11; ++clock.tick; require(host.publish_world_clock(clock)); client.update(.01); require(clocks==1);
+    clock.level=11; ++clock.tick; require(host.publish_world_clock(clock)); client.update(.01); require(clocks==2);
+    require(directed.level==10 && directed.game_time==clock.game_time && directed.cycle==clock.cycle);
+    // The host's current map does not determine which map receives global
+    // directives. An in-flight recipient level load still blocks application.
+    require(host.assign_level(player,12,801));host.update(.01);client.update(.01);
+    ++clock.tick;require(host.publish_world_clock(clock));client.update(.01);require(clocks==2);
+    require(client.acknowledge_level(12));host.update(.01);
+    clock.fx="storm";clock.fx_remaining=100;
+    ++clock.tick;require(host.publish_world_clock(clock));client.update(.01);require(clocks==3);
+    require(directed.level==12 && directed.fx=="storm" && directed.fx_remaining==100 && directed.time_factor==clock.time_factor);
     std::cout<<"Host world rules bounds, chunk assembly, local preference isolation and world clock loading checks passed\n";
 }

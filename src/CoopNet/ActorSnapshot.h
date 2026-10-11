@@ -71,16 +71,49 @@ public:
             !ticks_.accept(snapshot.tick)) return false;
         samples_.push_back(snapshot); if (samples_.size() > 32) samples_.pop_front(); return true;
     }
-    bool sample(std::uint64_t estimated_server_us, ActorSnapshot& output, std::uint64_t delay_us = 100000) const {
+    bool sample(std::uint64_t estimated_server_us, ActorSnapshot& output, std::uint64_t delay_us = 100000,
+        std::uint64_t extrapolation_us = 0) const {
         if (samples_.empty()) return false;
         const auto target = estimated_server_us > delay_us ? estimated_server_us - delay_us : 0;
         if (target <= samples_.front().time_us) { output = samples_.front(); return true; }
-        if (target >= samples_.back().time_us) { output = samples_.back(); return true; }
+        if (target >= samples_.back().time_us) {
+            output = samples_.back();
+            // Presentation may bridge a short missing pose, never an unlimited
+            // outage. Do not predict immediately after spawning or teleporting.
+            const auto ahead = target - output.time_us;
+            const auto bounded = (std::min)(ahead, (std::min)(extrapolation_us, std::uint64_t{100000}));
+            bool continuous = samples_.size() > 1;
+            if (continuous) {
+                const auto& previous = samples_[samples_.size()-2];
+                float distance = 0;
+                for (unsigned axis=0; axis<3; ++axis) {
+                    const float delta=output.position[axis]-previous.position[axis];
+                    distance+=delta*delta;
+                }
+                continuous = distance <= 25.f;
+            }
+            if (continuous && bounded) {
+                for (unsigned axis=0; axis<3; ++axis)
+                    output.position[axis] += output.velocity[axis] * static_cast<float>(bounded) * .000001f;
+                output.time_us += bounded;
+            }
+            return true;
+        }
         for (std::size_t i = 1; i < samples_.size(); ++i) {
             const auto& right = samples_[i]; const auto& left = samples_[i - 1];
             if (target > right.time_us) continue;
             const double alpha = static_cast<double>(target - left.time_us) / (right.time_us - left.time_us);
             output = left; output.time_us = target;
+            float distance=0;
+            for (unsigned axis=0; axis<3; ++axis) {
+                const float delta=right.position[axis]-left.position[axis];
+                distance+=delta*delta;
+            }
+            // Relocations are discrete, not paths through intervening geometry.
+            if (extrapolation_us && distance>25.f) {
+                output = target < right.time_us ? left : right;
+                return true;
+            }
             for (unsigned axis = 0; axis < 3; ++axis) {
                 output.position[axis] = static_cast<float>(left.position[axis] * (1 - alpha) + right.position[axis] * alpha);
                 output.velocity[axis] = static_cast<float>(left.velocity[axis] * (1 - alpha) + right.velocity[axis] * alpha);

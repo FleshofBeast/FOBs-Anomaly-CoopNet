@@ -11,6 +11,7 @@
 #include "InventoryView.h"
 #include "WorldBaseline.h"
 #include "WorldState.h"
+#include "RegionMessages.h"
 #include "SharedWorld.h"
 #include "Radio.h"
 #include "PartyTransition.h"
@@ -23,6 +24,7 @@
 namespace coopnet {
 // Engine-safe owner-thread pump; no transport callbacks access gameplay objects.
 class ClientPump {
+    std::function<bool(const Frame&)> region_sink_;
     ClientSession session_;
     std::unique_ptr<Transport> transport_;
     std::unique_ptr<ClientRoster> roster_;
@@ -118,6 +120,13 @@ class ClientPump {
         clear_baseline();
     }
 public:
+    void set_region_sink(std::function<bool(const Frame&)> sink) {region_sink_=std::move(sink);}
+    SendResult send_region_frame(const Frame& frame) {
+        if(!valid_contract(frame) || frame.payload.size()>max_payload-16 ||
+            (frame.message!=Message::RegionAck && frame.message!=Message::RegionChunk && frame.message!=Message::RegionState)) return SendResult::Invalid;
+        if(!transport_ || session_.state()!=ClientState::Connected || !ready_sent_ || !baseline_acknowledged_ || !level_ready_sent_) return SendResult::Disconnected;
+        return transport_->send(frame);
+    }
     const std::string& player_name(Identity player) const {
         static const std::string empty; const auto found=names_.find(player); return found==names_.end()?empty:found->second;
     }
@@ -397,6 +406,8 @@ public:
                     else {std::vector<RadioRecord> news;if(!decode_radio(assembly.bytes(),news)) {lost();return;}}
                     shared_revision_[kind]=chunk.revision; if (shared_sink_) shared_sink_(chunk.kind,chunk.level,assembly.bytes()); assembly.clear();
                 }
+            } else if (frame.message==Message::RegionLease || frame.message==Message::RegionChunk || frame.message==Message::RegionState) {
+                if(!baseline_acknowledged_ || !level_ready_sent_ || !region_sink_ || !region_sink_(frame)) {lost();return;}
             } else if (frame.message==Message::WorldState) {
                 WorldState state;
                 if (!decode_world_state(frame.payload,state) || frame.sequence!=state.tick) { lost(); return; }
@@ -542,6 +553,7 @@ public:
         }
     }
     void stop() {
+        region_sink_={};
         names_.clear();
         character_frames_.clear(); character_cursor_=0;
         if (transport_) transport_->close();

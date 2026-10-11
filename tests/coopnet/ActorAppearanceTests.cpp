@@ -8,14 +8,20 @@ int main(){
     ActorAppearance a;a.entity=90;a.generation=1;a.level=3;a.body="actors/stalker.ogf";
     a.weapon="weapons/ak74.ogf";a.left_bone="left";a.right_bone="right";a.one_hand_bone="finger";
     a.animation=2;a.hidden_weapon={"silencer","scope"};a.offset={.1f,.2f,.3f,0,0,0};
+    a.cycles={{0,0,12,.75f,1.f,false},{1,1,34,.2f,.8f,true}};
+    a.zoom=true;a.safemode=true;
     auto bytes=encode_appearance(a);ActorAppearance decoded;
     require(decode_appearance(bytes,decoded)&&encode_appearance(decoded)==bytes);
+    require(decoded.zoom && decoded.safemode);
     for(std::size_t n=0;n<bytes.size();++n)require(!decode_appearance({bytes.begin(),bytes.begin()+n},decoded));
     auto invalid=bytes;invalid.push_back(0);require(!decode_appearance(invalid,decoded));
     auto bad=a;bad.weapon="../outside.ogf";require(!valid_appearance(bad));
     bad=a;bad.hidden_weapon.push_back("scope");require(!valid_appearance(bad));
     bad=a;bad.offset[0]=std::numeric_limits<float>::infinity();require(!valid_appearance(bad));
     bad=a;bad.right_bone.clear();require(!valid_appearance(bad));
+    bad=a;bad.cycles.push_back(a.cycles.front());require(!valid_appearance(bad));
+    bad=a;bad.cycles[0].time=std::numeric_limits<float>::quiet_NaN();require(!valid_appearance(bad));
+    bad=a;bad.cycles[0].part=4;require(!valid_appearance(bad));
     require(!valid_contract({Message::ActorAppearance,Channel::Actor,Delivery::UnreliableSequenced,0,bytes}));
     HostPump host;ClientPump client;Identity token=100;host.start(500,1,{10,20},[&]{return ++token;});
     require(host.create_actor({90,1,1,1,3,a.body}));require(host.publish_appearance(a));
@@ -24,6 +30,7 @@ int main(){
     const auto player=client.session().welcome().player;require(player);
     require(host.set_interest_level(player,3));host.update(.1);client.update(.1);
     require(client.appearance(90)&&client.appearance(90)->weapon==a.weapon);
+    require(client.appearance(90)->cycles.size()==2 && client.appearance(90)->cycles[1].stop && client.appearance(90)->cycles[1].motion==34);
     ActorSnapshot snapshot;snapshot.entity=90;snapshot.generation=1;snapshot.level=3;snapshot.tick=1;snapshot.time_us=1000000;
     require(host.publish_snapshot(snapshot));client.update(.1);
     a.body="actors/exoskeleton.ogf";a.weapon.clear();a.hidden_weapon.clear();a.animation=0;

@@ -11,6 +11,7 @@
 #include "../Include/xrRender/KinematicsAnimated.h"
 #include <atomic>
 #include "Actor.h"
+#include "actor_anim_defs.h"
 #include "../CoopNet/PlayerName.h"
 #include "ui/UITextureMaster.h"
 #include "../xrEngine/GameFont.h"
@@ -27,11 +28,16 @@ public:
     std::uint32_t updates = 0;
     std::atomic<std::uint32_t> renders{0};
     MotionID legs, torso, head;
+    SActorMotions local_motions{};
+    std::uint16_t last_movement=0;
+    u32 motion_capture_time=0,motion_capture_count=0;
     IRenderVisual* weapon=nullptr;
     Fmatrix weapon_transform;
     coopnet::ActorAppearance appearance;
     std::atomic<std::uint32_t> weapon_renders{0};
     bool weapon_attached=false;
+    std::vector<coopnet::WorldAnimation> native_cycles;
+    u32 native_cycle_received=0;
     struct AimBone {float pitch=0,factor=0;};
     AimBone aim_bones[3]{{0,.2f},{0,.7f},{0,.1f}};
     static void aim_callback(CBoneInstance* bone) {
@@ -41,6 +47,7 @@ public:
         bone->mTransform.mulA_43(rotation);bone->mTransform.c=position;
     }
     unsigned probe_shots=0;
+    u32 probe_ready_frame=0;
     RemoteActorVisual(const RemoteActorPose& pose) : ISpatial(g_SpatialSpace), generation(pose.generation), model(pose.appearance.body.empty()?pose.visual:pose.appearance.body.c_str()) {
         renderable.visual = Render->model_Create(model.c_str());
         spatial.type = STYPE_RENDERABLE;
@@ -50,6 +57,7 @@ public:
             for(unsigned i=0;i<3;++i) {const auto bone=skeleton->LL_BoneID(names[i]);if(bone!=BI_NONE)skeleton->LL_GetBoneInstance(bone).set_callback(bctCustom,aim_callback,&aim_bones[i]);}
         }
         weapon_transform.identity(); legs.invalidate(); torso.invalidate(); head.invalidate();
+        if(auto* animated=renderable.visual->dcast_PKinematicsAnimated())local_motions.Create(animated);
         apply(pose); spatial_register();
     }
     ~RemoteActorVisual() override {
@@ -61,38 +69,105 @@ public:
     bool canOptimizeCalculateBones() override { return false; }
     void animate(IKinematicsAnimated& animated, std::uint16_t movement) {
         using namespace ACTOR_DEFS;
-        const bool crouched = (movement & mcCrouch) != 0;
-        const bool climbing = !crouched && (movement & mcClimb) != 0;
-        const char* base = crouched ? "cr" : climbing ? "cl" : "norm";
-        // The engine's acceleration modifier selects walking when set.
-        const bool running = !(movement & mcAccel) || (movement & mcSprint);
-        const char* suffix = climbing ? "_idle_1" : crouched && !running ? "_idle_1" : "_idle_0";
-        if (movement & mcLanding) suffix = "_jump_end";
-        else if (movement & mcLanding2) suffix = "_jump_end_1";
-        else if ((movement & mcTurn) && !climbing) suffix = "_turn";
-        else if (movement & mcFall) suffix = "_jump_idle";
-        else if (movement & mcJump) suffix = "_jump_begin";
-        else if (movement & mcFwd) suffix = running || climbing ? "_run_fwd_0" : "_walk_fwd_0";
-        else if (movement & mcBack) suffix = running || climbing ? "_run_back_0" : "_walk_back_0";
-        else if (movement & mcLStrafe) suffix = running || climbing ? "_run_ls_0" : "_walk_ls_0";
-        else if (movement & mcRStrafe) suffix = running || climbing ? "_run_rs_0" : "_walk_rs_0";
-        string128 name;
-        strconcat(sizeof(name), name, base, suffix);
-        auto nextLegs = animated.ID_Cycle_Safe(name);
-        if (!nextLegs.valid()) nextLegs = animated.ID_Cycle_Safe("norm_idle_0");
-        xr_sprintf(name,"%s_torso_%u_aim_0",base,weapon && appearance.animation?appearance.animation:0);
-        auto nextTorso = animated.ID_Cycle_Safe(name);
-        if (!nextTorso.valid()) nextTorso = animated.ID_Cycle_Safe("norm_torso_0_aim_0");
-        const auto nextHead = animated.ID_Cycle_Safe("head_idle_0");
-        if (nextTorso.valid() && torso != nextTorso) { animated.PlayCycle(nextTorso, TRUE); torso = nextTorso; }
-        if (nextHead.valid() && head != nextHead) { animated.PlayCycle(nextHead, TRUE); head = nextHead; }
-        if (nextLegs.valid() && legs != nextLegs) { animated.PlayCycle(nextLegs, TRUE); legs = nextLegs; }
+        const auto& state=(movement&mcCrouch)?local_motions.m_crouch:local_motions.m_normal;
+        const bool accelerated=isActorAccelerated(movement,appearance.zoom);
+        const auto& gait=accelerated?state.m_run:state.m_walk;
+        MotionID nextLegs=state.legs_idle,nextTorso=state.m_torso_idle,nextHead=state.m_head_idle;
+        if(movement&mcLanding)nextLegs=state.landing[0];
+        else if(movement&mcLanding2)nextLegs=state.landing[1];
+        else if(movement&mcTurn)nextLegs=state.legs_turn;
+        else if(movement&mcFall)nextLegs=state.jump_idle;
+        else if(movement&mcJump)nextLegs=state.jump_begin;
+        else if(movement&mcFwd)nextLegs=gait.legs_fwd;
+        else if(movement&mcBack)nextLegs=gait.legs_back;
+        else if(movement&mcLStrafe)nextLegs=gait.legs_ls;
+        else if(movement&mcRStrafe)nextLegs=gait.legs_rs;
+        if((movement&mcCrouch) && !accelerated && !(movement&mcAnyMove))
+            nextLegs=animated.ID_Cycle_Safe("cr_idle_1");
+        auto moving=(movement&mcAnyMove)?(accelerated?STorsoWpn::eRun:STorsoWpn::eWalk):STorsoWpn::eIdle;
+        if(movement&mcSprint) {
+            moving=STorsoWpn::eSprint;
+            const bool jumping=(movement&(mcFall|mcLanding|mcLanding2|mcJump))!=0;
+            const auto& sprint=local_motions.m_sprint;
+            if(movement&mcFwd)nextLegs=jumping?sprint.legs_jump_fwd:sprint.legs_fwd;
+            else if(movement&mcLStrafe)nextLegs=jumping?sprint.legs_jump_ls:sprint.legs_ls;
+            else if(movement&mcRStrafe)nextLegs=jumping?sprint.legs_jump_rs:sprint.legs_rs;
+        }
+        if(weapon && appearance.animation && appearance.animation<=_total_anim_slots_) {
+            const auto& equipped=state.m_torso[appearance.animation-1];
+            nextTorso=appearance.zoom?equipped.zoom:
+                (appearance.safemode && moving!=STorsoWpn::eSprint)?equipped.safemode:equipped.moving[moving];
+            if(!nextTorso.valid())nextTorso=state.m_torso[4].moving[moving];
+        }
+        auto explicit_part=[&](MotionID motion) {
+            if(!motion.valid())return false;
+            const auto part=animated.LL_GetMotionDef(motion)->bone_or_part;
+            return std::any_of(native_cycles.begin(),native_cycles.end(),[&](const coopnet::WorldAnimation& cycle){return cycle.part==part;});
+        };
+        // Stock actor motion tables select ordinary poses locally. Explicit
+        // action cycles own only their partition, so locomotion keeps running.
+        if(nextLegs.valid() && !explicit_part(nextLegs) && legs!=nextLegs){
+            float phase=0;
+            if((movement&mcAnyMove) && (last_movement&mcAnyMove) && legs.valid()) {
+                const auto part=animated.LL_GetMotionDef(legs)->bone_or_part;
+                if(part<4)for(unsigned i=0;i<animated.LL_PartBlendsCount(part);++i) {
+                    const auto* blend=animated.LL_PartBlend(part,i);
+                    if(blend && blend->motionID==legs && blend->timeTotal>0)phase=fmodf(blend->timeCurrent,blend->timeTotal)/blend->timeTotal;
+                }
+            } else if(movement&mcAnyMove)phase=.5f;
+            auto* blend=animated.PlayCycle(nextLegs,TRUE);
+            if(blend)blend->timeCurrent=blend->timeTotal*phase;
+            legs=nextLegs;
+        }
+        if(nextTorso.valid() && !explicit_part(nextTorso) && torso!=nextTorso){animated.PlayCycle(nextTorso,TRUE);torso=nextTorso;}
+        if(nextHead.valid() && !explicit_part(nextHead) && head!=nextHead){animated.PlayCycle(nextHead,TRUE);head=nextHead;}
         animated.UpdateTracks();
+        last_movement=movement;
+        for(auto cycle:native_cycles) {
+            if(cycle.slot>=animated.LL_MotionsSlotCount())continue;
+            auto& motions=const_cast<shared_motions&>(animated.LL_MotionsSlot(cycle.slot));
+            if(cycle.motion>=motions.motion_defs()->size() || cycle.part>=motions.partition()->count())continue;
+            const MotionID motion(cycle.slot,cycle.motion);CBlend* active=nullptr;
+            for(unsigned i=0;i<animated.LL_PartBlendsCount(cycle.part);++i) {
+                auto* blend=animated.LL_PartBlend(cycle.part,i);
+                if(blend && blend->channel==0 && blend->motionID==motion){active=blend;break;}
+            }
+            if(!active)active=animated.PlayCycle(cycle.part,motion,TRUE,nullptr,nullptr,0,cycle.speed);
+            if(!active)continue;
+            const float time=cycle.time+float(u32(Device.dwTimeGlobal-native_cycle_received))*.001f*cycle.speed;
+            if(active->timeTotal>0) {
+                const float phase=cycle.stop?(std::min)(time,active->timeTotal):fmodf(time,active->timeTotal);
+                const float difference=cycle.stop?fabsf(active->timeCurrent-phase):fabsf(remainderf(active->timeCurrent-phase,active->timeTotal));
+                if(difference>.15f)active->timeCurrent=phase;
+            }
+            active->speed=cycle.speed;active->stop_at_end=cycle.stop;
+            active->Callback=nullptr;active->CallbackParam=nullptr;
+        }
     }
     void apply(const RemoteActorPose& pose) {
         ++updates;
-        if(!pose.appearance.body.empty() && (appearance.body.empty() || coopnet::encode_appearance(appearance)!=coopnet::encode_appearance(pose.appearance))) {
+        // Repeated presentation frames must advance from the received native
+        // phase, rather than resetting an animation on every render frame.
+        auto cycle_bytes=[](const std::vector<coopnet::WorldAnimation>& cycles) {
+            coopnet::Writer writer;
+            for(const auto& cycle:cycles){writer.integer(cycle.part,1);writer.integer(cycle.slot,2);writer.integer(cycle.motion,2);coopnet::write_world_float(writer,cycle.time);coopnet::write_world_float(writer,cycle.speed);writer.integer(cycle.stop,1);}
+            return writer.bytes;
+        };
+        if(cycle_bytes(native_cycles)!=cycle_bytes(pose.appearance.cycles)) {
+            if(auto* animated=renderable.visual->dcast_PKinematicsAnimated()) {
+                for(const auto& old:native_cycles) {
+                    if(std::any_of(pose.appearance.cycles.begin(),pose.appearance.cycles.end(),[&](const coopnet::WorldAnimation& cycle){return cycle.part==old.part;}))continue;
+                    for(auto* cached:{&legs,&torso,&head})
+                        if(cached->valid() && animated->LL_GetMotionDef(*cached)->bone_or_part==old.part)cached->invalidate();
+                }
+            }
+            native_cycles=pose.appearance.cycles;native_cycle_received=Device.dwTimeGlobal;
+        }
+        auto old_gear=appearance,new_gear=pose.appearance;
+        old_gear.cycles.clear();new_gear.cycles.clear();
+        if(!pose.appearance.body.empty() && (appearance.body.empty() || coopnet::encode_appearance(old_gear)!=coopnet::encode_appearance(new_gear))) {
             if(appearance.weapon!=pose.appearance.weapon) {
+                probe_shots=0;probe_ready_frame=Device.dwFrame+30;
                 if(weapon)Render->model_Delete(weapon);
                 if(!pose.appearance.weapon.empty()) {
                     string_path asset;xr_strcpy(asset,pose.appearance.weapon.c_str());if(!strstr(asset,".ogf"))xr_strcat(asset,".ogf");
@@ -112,12 +187,18 @@ public:
         for(auto& bone:aim_bones) bone.pitch=pose.rotation[0];
         renderable.xform.setHPB(-pose.rotation[1], 0, pose.rotation[2]);
         renderable.xform.c.set(pose.position[0],pose.position[1],pose.position[2]);
-        if(strstr(GetCommandLineA(),"-coop_appearance_probe") && g_actor) {
+        if(strstr(GetCommandLineA(),"-coop_engine_fixture") && strstr(GetCommandLineA(),"-coop_wan_simulation_probe")) {
+            Msg("* CoopNet WAN render pose: frame %u time %u movement %u position %.4f %.4f %.4f",Device.dwFrame,Device.dwTimeGlobal,pose.movement,pose.position[0],pose.position[1],pose.position[2]);
+            if((pose.movement&ACTOR_DEFS::mcAnyMove) && motion_capture_count<80 && u32(Device.dwTimeGlobal-motion_capture_time)>=100) {
+                motion_capture_time=Device.dwTimeGlobal;++motion_capture_count;Render->Screenshot(IRender_interface::SM_NORMAL);
+            }
+        }
+        if((strstr(GetCommandLineA(),"-coop_appearance_probe") || strstr(GetCommandLineA(),"-coop_remote_visual_probe")) && g_actor) {
             Fvector target=renderable.xform.c;target.y+=1.2f;
             static_cast<CCameraFirstEye*>(g_actor->cam_FirstEye())->LookAtPoint(target);
-            if(weapon && weapon_renders.load(std::memory_order_relaxed)>100 && probe_shots<2) {
+            if(weapon && Device.dwFrame>=probe_ready_frame && weapon_renders.load(std::memory_order_relaxed)>100 && probe_shots<2) {
                 Render->Screenshot(IRender_interface::SM_NORMAL);++probe_shots;
-                Msg("* CoopNet appearance probe screenshot: body %s weapon %s",model.c_str(),appearance.weapon.c_str());
+                Msg("* CoopNet appearance probe screenshot: body %s weapon %s native cycles %u local native animation enabled",model.c_str(),appearance.weapon.c_str(),static_cast<unsigned>(native_cycles.size()));
             }
         }
         if (auto* animated = renderable.visual->dcast_PKinematicsAnimated()) animate(*animated, pose.movement);

@@ -186,9 +186,25 @@ function on_game_start()
     local add=axr_companions.add_special_squad
     if add then
         axr_companions.add_special_squad=function(squad,...)
-            if active_task and squad then isolate(squad,active_task,false) end
+            -- Dialogue effects can recruit a companion after give_task returns.
+            -- Such followers must regain their native planner on the guest too.
+            if squad and level.coop_world_replica() then isolate(squad,active_task or "personal_companion",false) end
             return add(squad,...)
         end
+    end
+    local companion_logic=axr_companions.setup_companion_logic
+    axr_companions.setup_companion_logic=function(npc,storage,loaded,...)
+        -- Fanatic's hunting dialogue calls this directly, bypassing squad
+        -- recruitment and the task-giving stack entirely.
+        if npc and not loaded and level.coop_world_replica() then
+            local squad=get_object_squad(npc)
+            if squad then
+                local quest=active_task or (npc:name():find("esc_2_12_stalker_fanat",1,true) and "esc_m_trader_task_1") or "personal_companion"
+                isolate(squad,quest,false)
+                printf("* CoopNet native personal companion planner enabled: %s",npc:name())
+            end
+        end
+        return companion_logic(npc,storage,loaded,...)
     end
     local callback=task_manager.task_callback
     task_manager.task_callback=function(tsk,state)

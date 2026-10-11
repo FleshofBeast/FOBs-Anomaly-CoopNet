@@ -102,10 +102,18 @@ std::string baseline_name(coopnet::Identity id) {
     char value[48]; snprintf(value,sizeof(value),"coopnet-%016llx",id); return value;
 }
 struct Session {
+    Session() {
+        if (strstr(GetCommandLineA(),"-coop_engine_fixture") && strstr(GetCommandLineA(),"-coop_wan_simulation_probe")) {
+            runtime.simulate_network(60,20.f,2.f);
+            Msg("* CoopNet simulated WAN enabled: outbound delay 60 ms jitter mean 20 ms max 40 ms loss 2 percent per client");
+        }
+    }
     // Connections are destroyed before the networking runtime.
     coopnet::GnsRuntime runtime;
     coopnet::HostPump host;
     coopnet::ClientPump client;
+    std::unique_ptr<coopnet::RegionAuthority> region_authority;
+    std::set<coopnet::Identity> region_participants;
     coopnet::Mode mode = coopnet::Mode::Offline;
     coopnet::ClientState last_client_state = coopnet::ClientState::Offline;
     bool saved_resume_attempt=false;
@@ -443,6 +451,46 @@ void update_party_probe(Session& current,double elapsed) {
 void publish_world(Session& current) {
     if (!current.world_probe || current.world_tick==current.tick) return;
     current.world_tick=current.tick;
+    NativeProcessingRange processing;
+    LocalActorPose region_local;
+    if(capture_processing_range(processing) && capture_local_actor(region_local)) {
+        if(!current.region_authority) {
+            current.region_authority=std::make_unique<coopnet::RegionAuthority>(processing.distance);
+            Msg("* CoopNet region grid mapped: 3x3 per player width %.3f online %.3f offline %.3f (native authority unchanged until checkpoints)",
+                processing.distance,processing.online,processing.offline);
+        }
+        auto& regions=*current.region_authority;
+        std::set<coopnet::Identity> present;
+        const auto host_player=current.host.session().players().front().id;
+        if(!regions.update_neighborhood(host_player,region_local.level,{region_local.position[0],region_local.position[1],region_local.position[2]}))
+            throw std::runtime_error("Host region interest capacity exceeded");
+        present.insert(host_player);
+        for(const auto& guest:current.guests) {
+            LocalActorPose pose;
+            if(!current.host.participant_ready(guest.first) || !capture_guest_actor(guest.second.object,pose)) continue;
+            if(!regions.update_neighborhood(guest.first,pose.level,{pose.position[0],pose.position[1],pose.position[2]}))
+                throw std::runtime_error("Guest region interest capacity exceeded");
+            present.insert(guest.first);
+        }
+        for(auto player:current.region_participants) if(!present.count(player)) regions.disconnect(player);
+        current.region_participants=std::move(present);
+        // Capture only in the isolated native acceptance fixture. Native
+        // delegation remains inactive until full offline-state restoration.
+        static bool checkpoint_probe_complete=false;
+        if(!checkpoint_probe_complete && current.tick>100 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
+            strstr(GetCommandLineA(),"-coop_native_acceptance_probe")) {
+            coopnet::NativeRegionCheckpoint checkpoint,decoded;
+            const auto key=regions.key_at(region_local.level,{region_local.position[0],region_local.position[1],region_local.position[2]});
+            if(capture_native_region_checkpoint(key,regions.width(),checkpoint) && !checkpoint.objects.empty()) {
+                const auto bytes=coopnet::encode_native_region_checkpoint(checkpoint);
+                if(!coopnet::decode_native_region_checkpoint(bytes,decoded)) throw std::runtime_error("Native checkpoint envelope round-trip failed");
+                const auto children=std::count_if(decoded.objects.begin(),decoded.objects.end(),[](const coopnet::NativeRegionObject& object){return object.parent!=0xffff;});
+                Msg("* CoopNet native checkpoint capture verified: level %u objects %u children %u bytes %u",key.level,
+                    static_cast<unsigned>(decoded.objects.size()),static_cast<unsigned>(children),static_cast<unsigned>(bytes.size()));
+                checkpoint_probe_complete=true;
+            }
+        }
+    }
     std::uint32_t level=0; std::vector<NativeWorldPose> objects;
     if (!capture_world_objects(level,objects)) return;
     if (current.zone_level!=level) { current.zone_states.clear(); current.zone_level=level; }
@@ -1020,7 +1068,7 @@ void capture_guests(Session& current) {
                 apply_guest_condition(guest.object,{input.health,input.power,input.radiation});
         }
         coopnet::ActorSnapshot owned;
-        if (!current.party_loading && !(current.party_probe && current.party_probe_phase>0) && guest.owner_motion.sample(current.server_us,owned,50000)) {
+        if (!current.party_loading && !(current.party_probe && current.party_probe_phase>0) && guest.owner_motion.sample(current.server_us,owned,50000,100000)) {
             if (!active) { owned.movement=0; owned.velocity={}; }
             if (apply_guest_owner_pose(guest.object,owned.position.data(),owned.velocity.data(),owned.movement)) {
                 capture_guest_actor(guest.object,pose);
@@ -1304,6 +1352,14 @@ bool simulation_active() {
         session->client.session().state() == coopnet::ClientState::Connected);
 }
 bool shared_world_active() { return session && session->world_probe; }
+bool host_region_relevant(std::uint32_t level,const float* position) {
+    if(!position || !session || session->mode!=coopnet::Mode::Host || !session->region_authority) return false;
+    coopnet::RegionKey key;
+    try {key=session->region_authority->key_at(level,{position[0],position[1],position[2]});}
+    catch(const std::invalid_argument&) {return false;}
+    for(auto player:session->region_participants) if(session->region_authority->interested(player,key)) return true;
+    return false;
+}
 bool party_level_change_allowed() {
     return !shared_world_active() || (session->mode==coopnet::Mode::Host && session->party_authorized);
 }
@@ -1311,6 +1367,13 @@ bool party_controls_enabled() {
     if (!shared_world_active()) return true;
     return session->mode==coopnet::Mode::Host ? !session->party_loading :
         session->client.party_status().stage!=coopnet::PartyStage::Loading;
+}
+bool joining_world() {
+    if(!pending_character_address.empty())return true;
+    if(!session || session->mode!=coopnet::Mode::Client || !session->world_probe)return false;
+    LocalActorPose local;
+    return !session->client.baseline_acknowledged() || !capture_local_actor(local) ||
+        session->placed_incarnation!=local.incarnation || (native_world_requested() && !native_character_ready());
 }
 void update(double) {
     if (!session && (!pending_character_address.empty() || pending_menu_host)) {
@@ -1724,6 +1787,7 @@ void command(const char* name, const char* arguments) {
             if (!session) throw std::runtime_error("Start a session before the movement probe");
             session->replica_probe = true; session->movement_probe = true;
             session->automated_controls = !strcmp(arguments,"auto");
+            if(!session->automated_controls)clear_local_movement_probe();
             begin_guest_simulation();
             Msg("* CoopNet native movement probe enabled: automatic controls %u; independent client world; gameplay authority pending",
                 static_cast<unsigned>(session->automated_controls));
@@ -2190,12 +2254,14 @@ void applying_host_settings(bool) {}
 bool join_from_menu(const char*) { return false; }
 bool validate_join_address(const char*) { return false; }
 bool queue_character_join(const char*,bool) { return false; }
+bool joining_world() { return false; }
 bool queue_menu_host() { return false; }
 void cancel_character_join() {}
 void saved_join_address(char* output,unsigned capacity) { if (output && capacity) output[0]=0; }
 void join_status(char* output,unsigned capacity) { if (output && capacity) snprintf(output,capacity,"CoopNet is unavailable in this build."); }
 bool simulation_active() { return false; }
 bool shared_world_active() { return false; }
+bool host_region_relevant(std::uint32_t,const float*) { return false; }
 bool party_level_change_allowed() { return true; }
 bool party_controls_enabled() { return true; }
 bool player_downed() { return false; }

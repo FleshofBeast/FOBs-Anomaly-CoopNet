@@ -1314,6 +1314,11 @@ void CCustomZone::OnStateSwitch(EZoneState new_state)
 void CCustomZone::CoopApplyState(u8 state,u32 elapsed)
 {
     if ((!engine_coopnet::world_replica_object(this) && !engine_coopnet::guest_native_world()) || state>=eZoneStateMax || elapsed>0x7fffffff) return;
+    // The guest's native contact test can activate a zone before that player's
+    // remote body reaches it on the host. An idle host snapshot must not cancel
+    // the local awakening/blowout while its native hit and warning still run.
+    if (engine_coopnet::guest_native_world() && state==eZoneStateIdle &&
+        (m_zone_flags.test(eZoneIsActive) || m_eZoneState==eZoneStateAwaking || m_eZoneState==eZoneStateBlowout)) return;
 	m_zone_flags.set(eFastMode,TRUE);
 	if (m_eZoneState!=EZoneState(state)) {
 		if (m_eZoneState==eZoneStateBlowout && m_zone_flags.test(eBlowoutDisableIdle)) PlayIdleParticles();

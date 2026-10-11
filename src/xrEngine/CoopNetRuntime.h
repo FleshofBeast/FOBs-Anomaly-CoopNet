@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <vector>
 #include <string>
 namespace engine_coopnet {
@@ -17,6 +18,7 @@ bool join_from_menu(const char* address);
 bool validate_join_address(const char* address);
 bool queue_character_join(const char* address,bool create);
 bool queue_menu_host();
+bool joining_world();
 void cancel_character_join();
 void saved_join_address(char* output,unsigned capacity);
 void join_status(char* output,unsigned capacity);
@@ -25,6 +27,7 @@ unsigned long long host_save_source_scope();
 unsigned long long guest_character_identity(unsigned short object);
 bool simulation_active();
 bool shared_world_active();
+bool host_region_relevant(std::uint32_t level,const float* position);
 bool party_level_change_allowed();
 bool party_controls_enabled();
 bool player_downed();

@@ -1,5 +1,6 @@
 #pragma once
 #include "ActorPresence.h"
+#include "WorldState.h"
 #include <set>
 namespace coopnet {
 // Host-authored presentation, independent of movement and inventory ownership.
@@ -10,11 +11,15 @@ struct ActorAppearance {
     std::array<float,6> offset{}; // native weapon offset: position, HPB
     std::uint8_t animation=0;
     bool one_hand=false;
+    bool zoom=false, safemode=false;
     std::vector<std::string> hidden_body,hidden_weapon;
+    std::vector<WorldAnimation> cycles;
 };
 inline bool valid_appearance(const ActorAppearance& a) {
     if (!a.entity || !a.generation || !a.level || a.body.empty() || !valid_actor_visual(a.body) ||
-        !valid_actor_visual(a.weapon) || a.animation>16 || a.hidden_body.size()>64 || a.hidden_weapon.size()>64) return false;
+        !valid_actor_visual(a.weapon) || a.animation>16 || a.hidden_body.size()>64 || a.hidden_weapon.size()>64 || a.cycles.size()>4) return false;
+    std::set<unsigned> parts;
+    for (const auto& cycle:a.cycles) if (!valid_world_animation(cycle) || !parts.insert(cycle.part).second) return false;
     for (const auto& name:{a.left_bone,a.right_bone,a.one_hand_bone})
         if (name.size()>63 || !valid_actor_visual(name)) return false;
     if (!a.weapon.empty() && (a.left_bone.empty() || a.right_bone.empty() || a.one_hand_bone.empty() || !a.animation)) return false;
@@ -31,8 +36,14 @@ inline std::vector<std::uint8_t> encode_appearance(const ActorAppearance& a) {
     auto string=[&](const std::string& s){w.integer(s.size(),2); for(unsigned char c:s) w.integer(c,1);};
     for (const auto& s:{a.body,a.weapon,a.left_bone,a.right_bone,a.one_hand_bone}) string(s);
     w.integer(a.animation,1); w.integer(a.one_hand,1);
+    w.integer(a.zoom,1);w.integer(a.safemode,1);
     for(float f:a.offset){std::uint32_t bits;std::memcpy(&bits,&f,4);w.integer(bits,4);}
     for (const auto* list:{&a.hidden_body,&a.hidden_weapon}) {w.integer(list->size(),1);for(const auto& s:*list) string(s);}
+    w.integer(a.cycles.size(),1);
+    for (const auto& cycle:a.cycles) {
+        w.integer(cycle.part,1);w.integer(cycle.slot,2);w.integer(cycle.motion,2);
+        write_world_float(w,cycle.time);write_world_float(w,cycle.speed);w.integer(cycle.stop,1);
+    }
     return w.bytes;
 }
 inline bool decode_appearance(const std::vector<std::uint8_t>& bytes,ActorAppearance& out) {
@@ -43,8 +54,17 @@ inline bool decode_appearance(const std::vector<std::uint8_t>& bytes,ActorAppear
     if(!string(a.body,191)||!string(a.weapon,191)||!string(a.left_bone,63)||!string(a.right_bone,63)||!string(a.one_hand_bone,63)||
         !r.integer(animation,1)||!r.integer(hand,1)||hand>1) return false;
     a.animation=static_cast<std::uint8_t>(animation);a.one_hand=hand!=0;
+    std::uint64_t zoom,safemode;
+    if(!r.integer(zoom,1)||!r.integer(safemode,1)||zoom>1||safemode>1)return false;
+    a.zoom=zoom!=0;a.safemode=safemode!=0;
     for(float& f:a.offset){std::uint64_t bits;if(!r.integer(bits,4))return false;auto b=static_cast<std::uint32_t>(bits);std::memcpy(&f,&b,4);}
     for(auto* list:{&a.hidden_body,&a.hidden_weapon}) {std::uint64_t count;if(!r.integer(count,1)||count>64)return false;for(std::uint64_t i=0;i<count;++i){std::string s;if(!string(s,63))return false;list->push_back(s);}}
+    std::uint64_t count;if(!r.integer(count,1)||count>4)return false;
+    for(std::uint64_t i=0;i<count;++i) {
+        WorldAnimation cycle;std::uint64_t part,slot,motion,stop;
+        if(!r.integer(part,1)||!r.integer(slot,2)||!r.integer(motion,2)||!read_world_float(r,cycle.time)||!read_world_float(r,cycle.speed)||!r.integer(stop,1)||stop>1)return false;
+        cycle.part=static_cast<std::uint8_t>(part);cycle.slot=static_cast<std::uint16_t>(slot);cycle.motion=static_cast<std::uint16_t>(motion);cycle.stop=stop!=0;a.cycles.push_back(cycle);
+    }
     if(r.remaining()||!valid_appearance(a))return false;out=std::move(a);return true;
 }
 }

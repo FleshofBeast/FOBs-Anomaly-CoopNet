@@ -152,12 +152,15 @@ bool capture_local_controls(LocalActorControls& controls);
 void local_actor_spawned();
 bool record_coopnet_weapon_input(std::uint16_t object,int command,bool pressed);
 bool capture_local_actor(LocalActorPose& pose);
+struct NativeProcessingRange {float distance=0,online=0,offline=0;};
+bool capture_processing_range(NativeProcessingRange& range);
 bool reconcile_local_actor(std::uint32_t level, const float* position, const float* velocity);
 bool correct_local_actor_native(std::uint32_t level,const float* position,const float* velocity,std::uint32_t delay_ms);
 void guest_input_received(std::uint16_t object,std::uint32_t sequence);
 void guest_input_simulated(std::uint16_t object);
 std::uint32_t guest_input_acknowledgement(std::uint16_t object);
 void set_local_movement_probe(std::uint16_t buttons,float yaw,float pitch);
+void clear_local_movement_probe();
 bool local_movement_probe_controls(std::uint16_t object,std::uint32_t& buttons,float& yaw,float& pitch);
 // Native host actor lifecycle. IDs never leave this owner-thread adapter.
 std::uint16_t spawn_guest_actor();
@@ -169,6 +172,8 @@ void control_guest_actor(std::uint16_t object, std::uint16_t buttons, float yaw,
 bool apply_guest_owner_pose(std::uint16_t object,const float* position,const float* velocity,std::uint16_t movement);
 void remove_guest_actor(std::uint16_t object);
 void clear_guest_actors();
+// Preserve stock ALife hysteresis around every admitted player on this level.
+float nearest_guest_distance(const float* position,std::uint32_t graph_vertex,float fallback);
 void guest_level_stopped();
 bool present_remote_actor(const RemoteActorPose& pose);
 void remove_remote_actor(std::uint64_t entity);

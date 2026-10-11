@@ -16,6 +16,7 @@
 #include "alife_graph_registry.h"
 #include "game_level_cross_table.h"
 #include "level_graph.h"
+#include "../CoopNet/EngineActorBridge.h"
 
 void CSE_ALifeGroupAbstract::switch_online()
 {
@@ -161,7 +162,7 @@ void CSE_ALifeGroupAbstract::try_switch_offline()
 				// to switch offline
 				break;
 
-			if (I->alife().graph().actor()->o_Position.distance_to(tpGroupMember->o_Position) <= I
+            if (engine_coopnet::nearest_guest_distance(&tpGroupMember->o_Position.x,tpGroupMember->m_tGraphID,I->alife().graph().actor()->o_Position.distance_to(tpGroupMember->o_Position)) <= I
 			                                                                                     ->alife().
 			                                                                                     offline_distance())
 				// so, it is not ready, breaking a cycle, because we can't 

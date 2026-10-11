@@ -86,7 +86,7 @@ public:
     }
     bool sample(Identity entity, std::uint64_t server_us, ActorSnapshot& output) const {
         auto found = entries_.find(entity);
-        return found != entries_.end() && found->second.active && found->second.snapshots.sample(server_us, output);
+        return found != entries_.end() && found->second.active && found->second.snapshots.sample(server_us, output,100000,100000);
     }
     const ActorPresence* find(Identity entity) const {
         const auto found = entries_.find(entity);

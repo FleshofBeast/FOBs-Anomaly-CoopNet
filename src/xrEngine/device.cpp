@@ -929,7 +929,9 @@ void CLoadScreenRenderer::start(bool b_user_input)
 {
 	PROF_EVENT();
 
-	Device.seqRender.Add(this, 0);
+	// A co-op character import can retain this renderer across the shared-world
+	// reload. Register it only once, even when a second precache begins.
+	if (!b_registered) Device.seqRender.Add(this, 0);
 	b_registered = true;
 	b_need_user_input = b_user_input;
 }

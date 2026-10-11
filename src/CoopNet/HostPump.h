@@ -11,6 +11,7 @@
 #include "InventoryView.h"
 #include "WorldBaseline.h"
 #include "WorldState.h"
+#include "RegionMessages.h"
 #include "SharedWorld.h"
 #include "PartyTransition.h"
 #include "WorldSettings.h"
@@ -93,6 +94,7 @@ class HostPump {
     std::function<bool()> character_validation_ready_;
     std::function<bool(Identity,Identity)> resume_character_handler_;
     bool character_required_=false;
+    std::function<bool(Identity,const Frame&)> region_sink_;
     std::function<void(const ClientHello&,const Welcome&)> rejection_handler_;
     bool reject_character(Peer& peer,Admission reason) {
         peer.rejected=true; peer.elapsed=0;
@@ -180,6 +182,9 @@ class HostPump {
                 peer.ready = true; publish();
                 for(const auto& name:names_) if(!queue(peer,{Message::PlayerName,Channel::Control,Delivery::ReliableOrdered,0,encode_player_name({name.first,name.second})})) return false;
             } else if (frame.message == Message::Disconnect && frame.payload.empty()) return false;
+            else if(peer.ready && (frame.message==Message::RegionAck || frame.message==Message::RegionChunk || frame.message==Message::RegionState)) {
+                if(!peer.baseline_received || peer.assigned || !region_sink_ || !region_sink_(peer.player,frame)) return false;
+            }
             else if(peer.ready && frame.message==Message::PlayerName) {
                 PlayerName name;
                 if(frame.sequence || !decode_player_name(frame.payload,name) || name.player!=peer.player) return false;
@@ -401,6 +406,16 @@ public:
         }
         return true;
     }
+    void set_region_sink(std::function<bool(Identity,const Frame&)> sink) {region_sink_=std::move(sink);}
+    SendResult send_region_frame(Identity player,const Frame& frame) {
+        if(!valid_contract(frame) || frame.payload.size()>max_payload-16 ||
+            (frame.message!=Message::RegionLease && frame.message!=Message::RegionChunk && frame.message!=Message::RegionState)) return SendResult::Invalid;
+        for(auto& peer:peers_) if(peer.player==player && peer.ready && peer.baseline_received && !peer.assigned && peer.transport->connected()) {
+            if(frame.delivery==Delivery::ReliableOrdered) return queue(peer,frame) ? SendResult::Sent : SendResult::Backpressure;
+            return peer.transport->send(frame);
+        }
+        return SendResult::Disconnected;
+    }
     bool participant_ready(Identity player) const {
         for (const auto& peer:peers_) if (peer.player==player) return peer.ready && peer.transport->connected();
         return false;
@@ -468,9 +483,13 @@ public:
         rules_revision_=revision; rules_frames_=std::move(frames); return true;
     }
     bool publish_world_clock(const WorldClock& clock) {
-        if (!valid_world_clock(clock)) return false;
-        const Frame frame{Message::WorldClock,Channel::World,Delivery::UnreliableSequenced,clock.tick,encode_world_clock(clock)};
-        for (auto& peer:peers_) if (peer.ready && peer.level==clock.level && !peer.assigned) {
+        if (session_.mode()!=Mode::Host || !valid_world_clock(clock)) return false;
+        // Time/weather remain host directives across loaded levels. Project the
+        // host state onto each admitted recipient's loaded level; the recipient
+        // still validates its level barrier before applying the directive.
+        for (auto& peer:peers_) if (peer.ready && peer.level && !peer.assigned) {
+            auto directed=clock;directed.level=peer.level;
+            const Frame frame{Message::WorldClock,Channel::World,Delivery::UnreliableSequenced,directed.tick,encode_world_clock(directed)};
             const auto result=peer.transport->send(frame);
             if (result!=SendResult::Sent && result!=SendResult::Backpressure) peer.transport->close();
         }
@@ -726,6 +745,7 @@ public:
             if (peer.transport->connected() && !flush(peer)) peer.transport->close();
     }
     void stop() {
+        region_sink_={};
         appearances_.clear();
         names_.clear();
         for (auto& peer : peers_) peer.transport->close();

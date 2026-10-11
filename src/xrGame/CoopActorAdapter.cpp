@@ -31,6 +31,7 @@
 #include "../CoopNet/EngineWorldBridge.h"
 #include "../CoopNet/WorldState.h"
 #include "../CoopNet/WorldPosePlayback.h"
+#include "actor_anim_defs.h"
 #include "../CoopNet/GuestSave.h"
 #include "../CoopNet/CharacterSave.h"
 #include "entity_alive.h"
@@ -883,6 +884,73 @@ void display_party_status(unsigned stage,unsigned present,unsigned required,std:
     else if (stage==4) xr_strcpy(text,"Co-op travel failed. Check the host connection.");
     else return;
     CurrentGameUI()->m_pMessagesWnd->AddLogMessage(shared_str(text));
+}
+bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width,
+    coopnet::NativeRegionCheckpoint& output) {
+    LocalActorPose local;
+    if(!collect_world_objects || !capture_local_actor(local) || world_level_is_replica() || local.level!=key.level ||
+        !coopnet::valid_region(key) || !std::isfinite(width) || width<10 || width>4096 || !Level().Server) return false;
+    coopnet::NativeRegionCheckpoint checkpoint;checkpoint.key=key;
+    std::vector<CGameObject*> pending;
+    std::set<u16> selected;
+    std::size_t checkpoint_bytes=18;
+    // Roots determine cell membership. Owned inventory follows its root even
+    // when an item's cached transform has not followed the parent yet.
+    for(const auto& entry:world_objects) {
+        auto* object=const_cast<CGameObject*>(entry.first);
+        if(entry.second.replica || object->cast_actor() || object->getDestroy() || object->H_Parent() ||
+            private_quest_followers.count(object->ID())) continue;
+        if(!smart_cast<CEntityAlive*>(object) && !smart_cast<CCustomZone*>(object) && !smart_cast<CInventoryBox*>(object)) continue;
+        auto* server=Level().Server->ID_to_entity(object->ID());
+        if(!server || server->ID_Parent!=0xffff) return false;
+        for(unsigned axis=0;axis<3;++axis)
+            if(!std::isfinite(object->Position()[axis]) || std::abs(object->Position()[axis])>1000000.f) return false;
+        const auto region=coopnet::region_at(local.level,{object->Position().x,object->Position().y,object->Position().z},width);
+        if(region==key) {pending.push_back(object);selected.insert(object->ID());}
+    }
+    if(pending.size()>4096) return false;
+    for(std::size_t index=0;index<pending.size();++index) {
+        auto* object=pending[index];
+        auto* server=Level().Server->ID_to_entity(object->ID());
+        auto found=world_objects.find(object);
+        if(!server || found==world_objects.end() || object->getDestroy() || object->cast_actor() ||
+            private_quest_followers.count(object->ID()) || pending.size()>4096) return false;
+        for(const auto child:server->children) {
+            auto* native=smart_cast<CGameObject*>(Level().Objects.net_Find(child));
+            auto* child_server=Level().Server->ID_to_entity(child);
+            if(!native || !child_server || child_server->ID_Parent!=object->ID() || native->H_Parent()!=object ||
+                !selected.insert(child).second) return false;
+            pending.push_back(native);
+        }
+        NET_Packet update;update.B.count=0;update.r_pos=0;
+        object->net_Export(update);server->UPDATE_Read(update);
+        if(!update.r_eof()) return false;
+        NET_Packet saved;saved.B.count=0;saved.r_pos=0;
+        object->net_Save(saved);server->load(saved);
+        if(!saved.r_eof()) return false;
+        if(auto* item=smart_cast<CInventoryItem*>(object))
+            if(auto* inventory=smart_cast<CSE_ALifeInventoryItem*>(server)) inventory->m_fCondition=item->GetCondition();
+        NET_Packet spawn;server->Spawn_Write(spawn,TRUE);
+        coopnet::NativeRegionObject record;
+        record.object=object->ID();record.parent=server->ID_Parent;record.incarnation=found->second.incarnation;
+        record.section=object->cNameSect().c_str();
+        checkpoint_bytes+=17+record.section.size()+spawn.B.count;
+        if(checkpoint_bytes>coopnet::region_checkpoint_limit) return false;
+        record.spawn.assign(spawn.B.data,spawn.B.data+spawn.B.count);
+        // Round-trip locally produced records before retaining a checkpoint.
+        // Do not reuse this as an unchecked parser for worker-supplied bytes.
+        auto* verify=F_entity_Create(record.section.c_str());
+        if(!verify) return false;
+        spawn.r_pos=0;
+        const bool valid=verify->Spawn_Read(spawn) && spawn.r_eof() && verify->ID==record.object &&
+            verify->ID_Parent==record.parent && xr_strcmp(verify->s_name.c_str(),record.section.c_str())==0 &&
+            verify->client_data==server->client_data;
+        F_entity_Destroy(verify);
+        if(!valid) return false;
+        checkpoint.objects.push_back(std::move(record));
+    }
+    if(!coopnet::valid_native_region_checkpoint(checkpoint)) return false;
+    output=std::move(checkpoint);return true;
 }
 bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& objects) {
     LocalActorPose local;
@@ -2217,6 +2285,22 @@ struct GuestSpawn { bool pending = true, removing = false; std::uint64_t incarna
     bool starter_pending=false; xr_vector<u16> starter_items;
     coopnet::InventoryView imported_character; xr_vector<u16> imported_items; bool importing=false; };
 xr_map<u16,GuestSpawn> guests;
+float nearest_guest_distance_impl(const float* position,std::uint32_t graph_vertex,float fallback) {
+    if (!g_pGameLevel || !ai().game_graph().valid_vertex_id(graph_vertex) ||
+        ai().game_graph().vertex(graph_vertex)->level_id()!=ai().level_graph().level_id()) return fallback;
+    // The host remains the native processor until delegated checkpoints are
+    // installed. Bring the complete union of players' nine-cell footprints
+    // online, including corners outside the old circular switching radius.
+    if(engine_coopnet::host_region_relevant(static_cast<std::uint32_t>(ai().level_graph().level_id())+1,position)) return 0.f;
+    Fvector point;point.set(position[0],position[1],position[2]);
+    for (const auto& guest:guests) {
+        if (guest.second.pending || guest.second.removing) continue;
+        auto* actor=smart_cast<CActor*>(Level().Objects.net_Find(guest.first));
+        if (actor && !actor->getDestroy() && actor->g_Alive())
+            fallback=(std::min)(fallback,point.distance_to(actor->Position()));
+    }
+    return fallback;
+}
 std::uint64_t guest_incarnation = 0;
 struct SessionItem { std::uint64_t incarnation=0; bool removing=false, enters_world=false; };
 xr_map<u16,SessionItem> session_items;
@@ -2240,6 +2324,16 @@ std::set<coopnet::Identity> retired_world_items;
 }
 bool native_character_ready() {
     LocalActorPose local;return guest_native_world() && capture_local_actor(local) && native_inventory_ready_incarnation==local.incarnation;
+}
+float nearest_guest_distance(const float* position,std::uint32_t graph_vertex,float fallback) {
+    return nearest_guest_distance_impl(position,graph_vertex,fallback);
+}
+bool capture_processing_range(NativeProcessingRange& range) {
+    if(!ai().get_alife()) return false;
+    NativeProcessingRange value{ai().alife().switch_distance(),ai().alife().online_distance(),ai().alife().offline_distance()};
+    if(!std::isfinite(value.distance) || !std::isfinite(value.online) || !std::isfinite(value.offline) ||
+        value.distance<10 || value.distance>4096 || value.online<0 || value.online>value.offline || value.offline>4096) return false;
+    range=value;return true;
 }
 bool capture_world_baseline(const char* name,std::uint32_t& level,std::vector<std::uint8_t>& bytes) {
     LocalActorPose pose;
@@ -3019,6 +3113,10 @@ void update_local_inventory_view() {
     LocalActorPose pose;
     if (!world_level_is_replica() || !local_inventory_view.actor || !capture_local_actor(pose) || pose.level!=local_inventory_view.level || !Level().Server) return;
     if (guest_native_world() && native_inventory_ready_incarnation==pose.incarnation) return;
+    // The stock binder activates the canonical save's loaded_active_slot on its
+    // first update. Restore the guest after that hook, so it cannot overwrite
+    // the guest's equipped/active slots with the host character's selection.
+    if (guest_native_world() && !character_selection_ready()) return;
     if (!local_inventory_view.community.empty() && !apply_actor_community(g_actor,local_inventory_view.community,inventory_local_incarnation!=pose.incarnation)) return;
     if(!apply_player_progress(g_actor,local_inventory_view.progress)) return;
     for (const auto& relation:local_inventory_view.npc_disposition) for (const auto& binding:world_objects) {
@@ -3098,17 +3196,21 @@ void update_local_inventory_view() {
             if (state.kind!=2 || state.ammo>ammo->m_boxSize) return; ammo->m_boxCurr=state.ammo;
           }
         }
-        if(guest_native_world() && state.place==2 && !inventory_equipment_restored.count(item->object().ID())) {
+        if(guest_native_world() && state.place!=0 && !inventory_equipment_restored.count(item->object().ID())) {
             // Replay the saved loadout through the same native move hooks as
             // manually unequipping and equipping. Spawn placement alone can
             // leave a restored weapon's HUD/processing state hidden.
             if(item->CurrPlace()!=eItemPlaceRuck && !g_actor->inventory().Ruck(item)) return;
-            if(!g_actor->inventory().Slot(state.slot,item,true)) return;
+            if(state.place==2 ? !g_actor->inventory().Slot(state.slot,item,true) : !g_actor->inventory().Belt(item)) return;
             inventory_equipment_restored.insert(item->object().ID());
         }
         else if (state.place==2 && (item->CurrPlace()!=eItemPlaceSlot || item->CurrSlot()!=state.slot)) g_actor->inventory().Slot(state.slot,item,true);
         else if (state.place==1 && item->CurrPlace()!=eItemPlaceBelt) g_actor->inventory().Belt(item);
         else if (state.place==0 && item->CurrPlace()!=eItemPlaceRuck) g_actor->inventory().Ruck(item);
+        // Take() balances its temporary processing reference after placement.
+        // Restored equipment still needs its own update reference to complete
+        // drawing, HUD animations and native equipment effects.
+        if(state.place!=0 && !item->object().processing_enabled()) item->object().processing_activate();
     }
     if (!ready) return;
     auto* active=g_actor->inventory().ActiveItem();
@@ -3284,6 +3386,10 @@ void set_local_movement_probe(std::uint16_t buttons,float yaw,float pitch) {
     local_movement_probe_active=true; local_movement_probe_buttons=buttons;
     local_movement_probe_yaw=yaw; local_movement_probe_pitch=pitch;
 }
+void clear_local_movement_probe() {
+    local_movement_probe_active=false;
+    local_movement_probe_buttons=0;
+}
 bool local_movement_probe_controls(std::uint16_t object,std::uint32_t& buttons,float& yaw,float& pitch) {
     if(!local_movement_probe_active || (!world_level_is_replica() && !strstr(Core.Params,"-coop_live_combat_probe")) || !g_actor || g_actor->ID()!=object) return false;
     buttons=local_movement_probe_buttons & 0x70bf; yaw=local_movement_probe_yaw; pitch=local_movement_probe_pitch;
@@ -3362,6 +3468,7 @@ void control_guest_actor(std::uint16_t object, std::uint16_t buttons, float yaw,
                     throw std::runtime_error("Imported equipment slot is unavailable");
             } else if (record.place==1) { if (item->CurrPlace()!=eItemPlaceBelt && !actor->inventory().Belt(item)) throw std::runtime_error("Imported belt equipment is unavailable"); }
             else actor->inventory().Ruck(item);
+            if(record.place!=0 && !item->object().processing_enabled())item->object().processing_activate();
             if (record.item==state.imported_character.active) active_slot=record.slot;
         }
         actor->set_money(state.imported_character.money,false); actor->inventory().Activate(active_slot,true);
@@ -3527,7 +3634,27 @@ bool capture_actor_appearance(std::uint16_t object,coopnet::ActorAppearance& out
         return names.size()<=64;
     };
     if(!hidden(actor->Visual(),a.hidden_body))return false;
+    // Send the native actor's selected cycles, including scripted full-body
+    // actions, drawing/reloading and the actual walking/running variants.
+    if(auto* animated=actor->Visual()->dcast_PKinematicsAnimated()) {
+        if(animated->LL_MotionsSlotCount()) {
+            auto& motions=const_cast<shared_motions&>(animated->LL_MotionsSlot(0));
+            for(unsigned part=0;part<4 && part<motions.partition()->count();++part) {
+                CBlend* best=nullptr;
+                for(unsigned i=0;i<animated->LL_PartBlendsCount(part);++i) {
+                    auto* blend=animated->LL_PartBlend(part,i);
+                    if(blend && blend->channel==0 && blend->motionID.valid() && (!best || blend->blendAmount>best->blendAmount)) best=blend;
+                }
+                if(best && (!actor->m_anims || !actor->m_anims->ordinary(best->motionID))) {
+                    coopnet::WorldAnimation cycle;cycle.part=static_cast<std::uint8_t>(part);cycle.slot=best->motionID.slot;cycle.motion=best->motionID.idx;
+                    cycle.time=best->timeCurrent;cycle.speed=best->speed;cycle.stop=best->stop_at_end!=FALSE;
+                    if(coopnet::valid_world_animation(cycle))a.cycles.push_back(cycle);
+                }
+            }
+        }
+    }
     auto* weapon=smart_cast<CWeapon*>(actor->inventory().ActiveItem());
+    a.zoom=weapon && weapon->IsZoomed();a.safemode=actor->is_safemode();
     if(weapon && weapon->Visual() && weapon->GetState()!=CHUDState::eHidden && weapon->GetState()!=CHUDState::eHiding) {
         auto* k=actor->Visual()->dcast_PKinematics();int left=-1,right=-1,one=-1;actor->g_WeaponBones(left,right,one);
         if(!k || left<0 || right<0 || one<0 || left>=k->LL_BoneCount() || right>=k->LL_BoneCount() || one>=k->LL_BoneCount())return false;

@@ -171,6 +171,10 @@ void CRender::ScreenshotImpl(ScreenshotMode mode, LPCSTR name, CMemoryWriter* me
 			string_path buf;
 			xr_sprintf(buf, sizeof(buf), "ss_%s_%s_(%s).%s", Core.UserName, timestamp(t_stemp),
 				(g_pGameLevel) ? g_pGameLevel->name().c_str() : "mainmenu", ps_r_screenshot_token == 0 ? "jpg" : (ps_r_screenshot_token == 1 ? "png" : "tga"));
+#if defined(USE_DX11)
+            if(strstr(Core.Params,"-coop_engine_fixture") && strstr(Core.Params,"-coop_wan_simulation_probe"))
+                xr_sprintf(buf,sizeof(buf),"coop_motion_%08u.jpg",Device.dwFrame);
+#endif
 			ID3DBlob* saved = 0;
 #ifdef USE_DX11
 			CHK_DX(D3DX11SaveTextureToMemory(HW.pContext, pSrcTexture, ps_r_screenshot_token == 0 ? D3DX11_IFF_JPG : (ps_r_screenshot_token == 1 ? D3DX11_IFF_PNG : D3DX11_IFF_BMP), &saved, 0));

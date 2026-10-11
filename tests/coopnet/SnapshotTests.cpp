@@ -29,6 +29,43 @@ int main() {
     require(buffer.sample(1300000, result) && result.position[0] == 10 && result.stance == 2);
     require(buffer.sample(10, result) && result.position[0] == 0);
     require(buffer.sample(UINT64_MAX, result) && result.position[0] == 10); // no unbounded extrapolation
+    SnapshotBuffer presentation; presentation.bind(5,1,10);
+    auto moving=first; moving.velocity={4,0,0};
+    require(presentation.push(moving));
+    require(presentation.sample(1150000,result,100000,100000) && result.position[0]==0); // spawn is not predicted
+    moving.tick=2; moving.time_us=1050000; moving.position[0]=.2f;
+    require(presentation.push(moving));
+    require(presentation.sample(1200000,result,100000,100000) && std::abs(result.position[0]-.4f)<1e-6f);
+    require(presentation.sample(UINT64_MAX,result,100000,100000) && std::abs(result.position[0]-.6f)<1e-6f); // outage bounded to 100 ms
+    moving.tick=3; moving.time_us=1250000; moving.position[0]=1.f;
+    require(presentation.push(moving));
+    require(presentation.sample(1350000,result,100000,100000) && result.position[0]==1.f); // recovery
+    moving.tick=4; moving.time_us=1300000; moving.position[0]=21.f;
+    require(presentation.push(moving));
+    require(presentation.sample(1375000,result,100000,100000) && result.position[0]==1.f);
+    require(presentation.sample(1450000,result,100000,100000) && result.position[0]==21.f); // no prediction through relocation
+    // Render a 20 Hz stream at 60 Hz with burst jitter, reordering and loss.
+    // The known trajectory makes positional error and frame steps measurable.
+    struct DelayedPose {std::uint64_t arrival;ActorSnapshot pose;};
+    std::vector<DelayedPose> delayed;
+    for(unsigned tick=1;tick<=100;++tick) {
+        if(tick%7==0)continue;
+        auto pose=first;pose.tick=tick;pose.time_us=1000000+tick*50000;
+        pose.position={tick*.2f,0,0};pose.velocity={4,0,0};
+        delayed.push_back({tick*50000+60000+(tick%5)*10000+(tick%11==0?140000:0),pose});
+    }
+    std::sort(delayed.begin(),delayed.end(),[](const DelayedPose& a,const DelayedPose& b){return a.arrival<b.arrival;});
+    SnapshotBuffer impaired;impaired.bind(5,1,10);
+    std::size_t next=0;float previous_x=0,max_step=0,max_error=0;bool rendered=false;
+    for(std::uint64_t wall=0;wall<4900000;wall+=16667) {
+        while(next<delayed.size() && delayed[next].arrival<=wall)impaired.push(delayed[next++].pose);
+        if(!impaired.sample(1000000+wall,result,100000,100000))continue;
+        if(rendered)max_step=(std::max)(max_step,std::abs(result.position[0]-previous_x));
+        if(wall>300000)max_error=(std::max)(max_error,std::abs(result.position[0]-float(wall-100000)*.000004f));
+        previous_x=result.position[0];rendered=true;
+    }
+    require(rendered && max_step<.35f && max_error<.45f);
+    std::cout<<"Impaired movement stream max frame step "<<max_step<<" m, trajectory error "<<max_error<<" m\n";
     buffer.bind(5, 2, 11); require(!buffer.push(second) && buffer.size() == 0);
     first.generation = 2; first.level = 11; first.tick = 0xfffffff0u;
     for (unsigned i = 0; i < 50; ++i) {

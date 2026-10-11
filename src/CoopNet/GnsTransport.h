@@ -4,6 +4,7 @@
 #include <steam/isteamnetworkingutils.h>
 #include <set>
 #include <string>
+#include <cstdlib>
 
 namespace coopnet {
 // One runtime per process; poll and all adapter calls belong to its owner thread.
@@ -50,6 +51,18 @@ public:
     }
     ISteamNetworkingSockets& api() { return *api_; }
     const std::string& last_failure() const { return last_failure_; }
+    // Explicit fixture configuration only; ordinary sessions never call this.
+    void simulate_network(int lag_ms, float jitter_ms, float loss_percent) {
+        if (lag_ms<0 || lag_ms>1000 || jitter_ms<0 || jitter_ms>500 || loss_percent<0 || loss_percent>30)
+            throw std::invalid_argument("Invalid simulated network profile");
+        auto* utils=SteamNetworkingUtils();
+        if (!utils->SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketLag_Send,lag_ms) ||
+            !utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketLoss_Send,loss_percent) ||
+            !utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Avg,jitter_ms) ||
+            !utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Max,jitter_ms*2) ||
+            !utils->SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Pct,100.f))
+            throw std::runtime_error("Simulated network configuration failed");
+    }
     void poll() { api_->RunCallbacks(); }
     bool listen(std::uint16_t port) {
         if (!port || listener_ != k_HSteamListenSocket_Invalid) return false;

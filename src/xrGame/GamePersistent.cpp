@@ -592,7 +592,7 @@ void CGamePersistent::game_loaded()
 	{
 		if (g_pGameLevel &&
 			g_pGameLevel->bReady &&
-			(allow_intro() && psDeviceFlags2.test(rsKeypress)) &&
+			(allow_intro() && psDeviceFlags2.test(rsKeypress) && !engine_coopnet::joining_world()) &&
 			load_screen_renderer.b_need_user_input &&
 			m_game_params.m_e_game_type == eGameIDSingle)
 		{
@@ -726,7 +726,7 @@ void CGamePersistent::OnFrame()
 #endif
 	if (!g_dedicated_server && !m_intro_event.empty()) m_intro_event();
 
-	if (!g_dedicated_server && Device.dwPrecacheFrame == 0 && !m_intro && m_intro_event.empty())
+	if (!g_dedicated_server && Device.dwPrecacheFrame == 0 && !m_intro && m_intro_event.empty() && !engine_coopnet::joining_world())
 		load_screen_renderer.stop();
 
 	if (!m_pMainMenu->IsActive())

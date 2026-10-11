@@ -6,6 +6,7 @@
 #include "Radio.h"
 #include "Dialogue.h"
 #include "WorldHit.h"
+#include "NativeRegionCheckpoint.h"
 class CObject;
 class CGameObject;
 class CSE_Abstract;
@@ -91,6 +92,10 @@ bool exercise_native_dialogue_topics_probe(std::uint64_t session,std::uint16_t a
 bool apply_shared_quests(std::uint64_t session,std::uint32_t level,const coopnet::QuestState& quests);
 void exercise_shared_world_probe(double elapsed,unsigned& phase,double& wait,std::uint16_t& object);
 bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& objects);
+// Owner-thread host bootstrap only. Captures native server/client save state;
+// this does not grant a lease or enable guest simulation.
+bool capture_native_region_checkpoint(const coopnet::RegionKey& key,double width,
+    coopnet::NativeRegionCheckpoint& checkpoint);
 bool apply_world_object(std::uint64_t session,std::uint64_t anchor,std::uint64_t incarnation,
     const float* position,const float* rotation,float health,const std::vector<coopnet::WorldAnimation>& animations={},
     std::uint8_t zone_state=255,std::uint32_t zone_time=0,std::uint64_t killer=0,bool killer_player=false,const coopnet::WorldPhysics& physics={});
