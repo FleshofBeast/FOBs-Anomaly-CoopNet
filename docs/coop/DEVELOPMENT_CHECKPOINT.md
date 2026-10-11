@@ -52,7 +52,27 @@ behavior. The corrected separate-map acceptance passed.
   were inspected: native corpses, camera above the floor and readable menu.
   Both actors recovered movement capsules; ammunition and all-dead guards passed.
 
-No fixture processes or build sessions remain running at this checkpoint.
+## Paused work checkpoint (2026-10-11)
+
+The goal is paused at the user's request. The current development commit also
+contains group-aware capture in CoopNetNativeCheckpoint.inc: squad groups and
+their members are captured together, including members outside the root cell.
+The native build passed in _build/checkpoint-squad-closure-build.log. The next
+acceptance run failed with "Live native region checkpoint round-trip missing"
+in _build/checkpoint-squad-closure-acceptance.log, fixture
+_build/native-world-7467b861cb104de88696213c10524dc3. Diagnose this before claiming
+the group capture changes are accepted.
+
+CoopNetNativeRestore.inc contains unfinished retained offline replay for existing
+registry objects. It checks lifetimes and structural relationships before
+replaying saved native state. This addition has not been compiled or tested;
+it does not implement fresh-object reconstruction or ownership handoff.
+
+The user reported a duplicate T-posing player model following a sliding death
+ragdoll. This remains unfixed and needs render-ownership diagnosis and visual
+verification on a slope from both clients. Earlier death acceptance does not
+establish that this duplicate-model issue is resolved.
+
 These checks prove capture and the listed regression behavior, not restore,
 lease handoff, remote-map simulation, distant event parity or Internet smoothing.
 
