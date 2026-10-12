@@ -114,6 +114,11 @@ struct Session {
     coopnet::ClientPump client;
     std::unique_ptr<coopnet::RegionAuthority> region_authority;
     std::set<coopnet::Identity> region_participants;
+    std::vector<std::uint8_t> offline_bootstrap;
+    coopnet::RegionKey offline_bootstrap_key;
+    std::map<coopnet::Identity,std::uint32_t> offline_bootstrap_offsets;
+    coopnet::RegionAssembly offline_bootstrap_assembly;
+    bool offline_bootstrap_restored=false;
     coopnet::Mode mode = coopnet::Mode::Offline;
     coopnet::ClientState last_client_state = coopnet::ClientState::Offline;
     bool saved_resume_attempt=false;
@@ -479,6 +484,31 @@ void publish_world(Session& current) {
         }
         for(auto player:current.region_participants) if(!present.count(player)) regions.disconnect(player);
         current.region_participants=std::move(present);
+        // Prove the native cross-process bootstrap before enabling delegated
+        // online simulation. This prefetch grants no simulation lease.
+        if(current.offline_checkpoint_probe_complete && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
+            strstr(GetCommandLineA(),"-coop_native_acceptance_probe")) {
+            if(current.offline_bootstrap.empty()) {
+                coopnet::NativeRegionCheckpoint checkpoint;
+                if(capture_bootstrap_offline_checkpoint(regions.width(),checkpoint)) {
+                    current.offline_bootstrap=coopnet::encode_native_region_checkpoint(checkpoint);
+                    current.offline_bootstrap_key=checkpoint.key;
+                }
+            }
+            if(!current.offline_bootstrap.empty()) for(auto player:current.region_participants) if(player!=host_player) {
+                auto& offset=current.offline_bootstrap_offsets[player];
+                if(offset>=current.offline_bootstrap.size()) continue;
+                const auto total=static_cast<std::uint32_t>(current.offline_bootstrap.size());
+                const auto end=(std::min)(total,offset+coopnet::region_chunk_size);
+                coopnet::RegionChunk chunk{current.offline_bootstrap_key,1,1,total,offset,
+                    {current.offline_bootstrap.begin()+offset,current.offline_bootstrap.begin()+end}};
+                if(current.host.send_region_frame(player,{coopnet::Message::RegionChunk,coopnet::Channel::World,
+                    coopnet::Delivery::ReliableOrdered,0,coopnet::encode_region_chunk(chunk)})==coopnet::SendResult::Sent) {
+                    offset=end;
+                    if(offset==total) Msg("* CoopNet host offline bootstrap streamed: player %llu level %u bytes %u",player,chunk.key.level,total);
+                }
+            }
+        }
         // Capture only in the isolated native acceptance fixture. Native
         // delegation remains inactive until full offline-state restoration.
         if((!current.checkpoint_probe_complete || !current.offline_checkpoint_probe_complete) && current.tick>100 && current.tick-current.checkpoint_probe_tick>=30 && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
@@ -2016,6 +2046,29 @@ void command(const char* name, const char* arguments) {
                 } else {
                     std::vector<coopnet::ContainerRecord> records; if (coopnet::decode_containers(bytes,records)) queue_container_catalogue(owner->client.session().welcome().session,level,records);
                 }
+            });
+            next->client.set_region_sink([owner](const coopnet::Frame& frame) {
+                if(!strstr(GetCommandLineA(),"-coop_engine_fixture") || !strstr(GetCommandLineA(),"-coop_native_acceptance_probe") ||
+                    frame.message!=coopnet::Message::RegionChunk || frame.sequence || owner->offline_bootstrap_restored) return false;
+                coopnet::RegionChunk chunk;
+                if(!coopnet::decode_region_chunk(frame.payload,chunk) || chunk.epoch!=1 || chunk.revision!=1 ||
+                    !owner->offline_bootstrap_assembly.accept(chunk)) return false;
+                if(owner->offline_bootstrap_assembly.complete()) {
+                    coopnet::NativeRegionCheckpoint checkpoint;
+                    if(!coopnet::decode_native_region_checkpoint(owner->offline_bootstrap_assembly.bytes(),checkpoint) ||
+                        !(checkpoint.key==chunk.key)) return false;
+                    if(!restore_host_offline_region(checkpoint)) {
+                        // A valid checkpoint can require registry reconciliation.
+                        // Do not turn a refused native restore into a disconnect.
+                        Msg("! CoopNet host offline bootstrap restoration pending reconciliation: level %u",chunk.key.level);
+                        owner->offline_bootstrap_assembly.clear();return true;
+                    }
+                    owner->offline_bootstrap_restored=true;
+                    Msg("* CoopNet guest host-issued offline bootstrap restored: level %u objects %u bytes %u registry aliases retained",
+                        chunk.key.level,static_cast<unsigned>(checkpoint.objects.size()),chunk.total);
+                    owner->offline_bootstrap_assembly.clear();
+                }
+                return true;
             });
             next->client.set_world_sink([owner](const coopnet::WorldState& state) {
                 if (!owner->world_probe) return;

@@ -99,14 +99,27 @@ public:
                 (appearance.safemode && moving!=STorsoWpn::eSprint)?equipped.safemode:equipped.moving[moving];
             if(!nextTorso.valid())nextTorso=state.m_torso[4].moving[moving];
         }
+        auto active_cycle=[&](u16 part,MotionID motion) {
+            if(part>=4 || !motion.valid())return false;
+            for(unsigned i=0;i<animated.LL_PartBlendsCount(part);++i) {
+                const auto* blend=animated.LL_PartBlend(part,i);
+                if(blend && blend->channel==0 && blend->motionID==motion && blend->blend_state()!=CBlend::eFREE_SLOT)return true;
+            }
+            return false;
+        };
+        auto selected_cycle_active=[&](MotionID motion) {
+            return motion.valid() && active_cycle(animated.LL_GetMotionDef(motion)->bone_or_part,motion);
+        };
         auto explicit_part=[&](MotionID motion) {
             if(!motion.valid())return false;
             const auto part=animated.LL_GetMotionDef(motion)->bone_or_part;
-            return std::any_of(native_cycles.begin(),native_cycles.end(),[&](const coopnet::WorldAnimation& cycle){return cycle.part==part;});
+            return std::any_of(native_cycles.begin(),native_cycles.end(),[&](const coopnet::WorldAnimation& cycle){
+                return cycle.part==part && active_cycle(cycle.part,MotionID(cycle.slot,cycle.motion));
+            });
         };
         // Stock actor motion tables select ordinary poses locally. Explicit
         // action cycles own only their partition, so locomotion keeps running.
-        if(nextLegs.valid() && !explicit_part(nextLegs) && legs!=nextLegs){
+        if(nextLegs.valid() && !explicit_part(nextLegs) && (legs!=nextLegs || !selected_cycle_active(nextLegs))){
             float phase=0;
             if((movement&mcAnyMove) && (last_movement&mcAnyMove) && legs.valid()) {
                 const auto part=animated.LL_GetMotionDef(legs)->bone_or_part;
@@ -119,8 +132,8 @@ public:
             if(blend)blend->timeCurrent=blend->timeTotal*phase;
             legs=nextLegs;
         }
-        if(nextTorso.valid() && !explicit_part(nextTorso) && torso!=nextTorso){animated.PlayCycle(nextTorso,TRUE);torso=nextTorso;}
-        if(nextHead.valid() && !explicit_part(nextHead) && head!=nextHead){animated.PlayCycle(nextHead,TRUE);head=nextHead;}
+        if(nextTorso.valid() && !explicit_part(nextTorso) && (torso!=nextTorso || !selected_cycle_active(nextTorso))){animated.PlayCycle(nextTorso,TRUE);torso=nextTorso;}
+        if(nextHead.valid() && !explicit_part(nextHead) && (head!=nextHead || !selected_cycle_active(nextHead))){animated.PlayCycle(nextHead,TRUE);head=nextHead;}
         animated.UpdateTracks();
         last_movement=movement;
         for(auto cycle:native_cycles) {
@@ -130,7 +143,7 @@ public:
             const MotionID motion(cycle.slot,cycle.motion);CBlend* active=nullptr;
             for(unsigned i=0;i<animated.LL_PartBlendsCount(cycle.part);++i) {
                 auto* blend=animated.LL_PartBlend(cycle.part,i);
-                if(blend && blend->channel==0 && blend->motionID==motion){active=blend;break;}
+                if(blend && blend->channel==0 && blend->motionID==motion && blend->blend_state()!=CBlend::eFREE_SLOT){active=blend;break;}
             }
             if(!active)active=animated.PlayCycle(cycle.part,motion,TRUE,nullptr,nullptr,0,cycle.speed);
             if(!active)continue;

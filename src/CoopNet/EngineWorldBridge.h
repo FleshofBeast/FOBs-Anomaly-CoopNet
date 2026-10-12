@@ -104,6 +104,9 @@ class RetainedOfflineRegion;
 // Minted from a local native capture, never from a worker-supplied packet.
 std::shared_ptr<const RetainedOfflineRegion> retain_offline_region(const coopnet::RegionKey& key,double width);
 bool restore_retained_offline_region(const std::shared_ptr<const RetainedOfflineRegion>& checkpoint);
+// Guest bootstrap from an authenticated host checkpoint, preserving offline aliases.
+bool restore_host_offline_region(const coopnet::NativeRegionCheckpoint& checkpoint);
+bool capture_bootstrap_offline_checkpoint(double width,coopnet::NativeRegionCheckpoint& checkpoint);
 bool apply_world_object(std::uint64_t session,std::uint64_t anchor,std::uint64_t incarnation,
     const float* position,const float* rotation,float health,const std::vector<coopnet::WorldAnimation>& animations={},
     std::uint8_t zone_state=255,std::uint32_t zone_time=0,std::uint64_t killer=0,bool killer_player=false,const coopnet::WorldPhysics& physics={});

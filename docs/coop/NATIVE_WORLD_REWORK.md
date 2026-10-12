@@ -381,3 +381,45 @@ contain no BusyHandsDebug, critical Lua or fatal error. Host and guest screensho
 were inspected. This proves the Cordon starting fallback, not every faction's
 visual spawn placement, transition persistence, remote corpse visual parity,
 squad-vote gameplay or teammate revival.
+
+## 2026-10-12 stopping point: host checkpoint bootstrap and spectator rendering
+
+Downed actors now reject first-person HUD rendering, including the native HUD-view
+query used by held items. The death-orbit probe asserts this state. Remote local
+animation selection now checks for a live matching blend, restarts missing tracks,
+and lets normal actor motions run when an explicit replicated cycle has no active
+track. These changes address the detached spectator arms and stale animation
+cache paths; reconnect T-posing and remote corpse parity still need dedicated
+visual acceptance.
+
+The native acceptance fixture now streams one authenticated host offline-region
+checkpoint to the guest over reliable world frames. The guest validates detached
+native packets and existing object, inventory and squad registry bindings before
+replay. Squad membership is checked through the serialized group member list;
+member m_group_id itself is not serialized. Incompatible native topology remains
+pending reconciliation without disconnecting the guest. This path is fixture-only,
+prefetches a checkpoint, and does not activate a simulation lease.
+
+DX11 build _build/offline-bootstrap-membership-spectator-build.log passed.
+Native acceptance _build/offline-bootstrap-membership-spectator-acceptance.log
+passed using native-world-90bd642f052b435ebe3f1c1cfa5b1372. The guest restored
+438 objects on level 14 (115160 bytes), retaining native registry aliases.
+Shared natural combat, native NPC frames, electrical damage, personal quest/loot
+and character save checks passed; clients closed normally and source saves were
+unchanged. This proves compatible offline bootstrap, not independent map play.
+
+Resume with dedicated reconnect/respawn animation and spectator visual coverage,
+remote ragdoll replication, registry reconciliation, then actual host-approved
+lease activation/acknowledgement, worker simulation/publication and independent
+map travel. Host global weather/story/save authority must remain intact. Gameplay
+all-dead voting and nearby teammate revive remain pending. No release or installed
+build deployment was performed.
+
+Death verification also passed: _build/spectator-hud-death-acceptance.log,
+fixture death-orbit-46d0debef9db4bb0b33d05bdcb623fd3. Both actors had native
+11-element ragdolls, anchored orbit/menu, HUD-view suppression and revival with
+retained ammunition. Guest screenshot ss_player_10-12-26_00-15-00_(l01_escape).jpg
+was inspected: corpse and spectator menu are visible without detached first-person
+arms. No critical Lua, BusyHandsDebug or fatal markers appeared in either death
+log. Both clients closed normally; source saves remained unchanged. Larger goal
+paused at the user's request for the night; resume from the work listed above.

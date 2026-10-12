@@ -894,6 +894,25 @@ void alife_lifetime_started(const CSE_Abstract* object) {
 void alife_lifetime_ended(const CSE_Abstract* object) {alife_lifetimes.erase(object);}
 #include "CoopNetNativeCheckpoint.inc"
 #include "CoopNetNativeRestore.inc"
+bool capture_bootstrap_offline_checkpoint(double width,coopnet::NativeRegionCheckpoint& output) {
+    LocalActorPose local;
+    if(!capture_local_actor(local) || !ai().get_alife() || world_level_is_replica()) return false;
+    std::set<coopnet::RegionKey> visited;
+    for(const auto& entry:ai().alife().objects().objects()) {
+        auto* server=entry.second;
+        if(server->m_bOnline || server->ID_Parent!=0xffff || !server->can_save() || server->redundant() ||
+            smart_cast<CSE_ALifeCreatureActor*>(server) || !ai().game_graph().valid_vertex_id(server->m_tGraphID)) continue;
+        const auto level=static_cast<std::uint32_t>(ai().game_graph().vertex(server->m_tGraphID)->level_id())+1;
+        if(level==local.level) continue;
+        const auto key=coopnet::region_at(level,{server->o_Position.x,server->o_Position.y,server->o_Position.z},width);
+        if(!visited.insert(key).second) continue;
+        coopnet::NativeRegionCheckpoint checkpoint;
+        if(!capture_offline_region_checkpoint(key,width,checkpoint) || checkpoint.objects.empty()) continue;
+        if(std::none_of(checkpoint.objects.begin(),checkpoint.objects.end(),[](const coopnet::NativeRegionObject& object){return object.parent!=0xffff;})) continue;
+        output=std::move(checkpoint);return true;
+    }
+    return false;
+}
 bool exercise_offline_checkpoint_probe(double width) {
     LocalActorPose local;
     if(!strstr(Core.Params,"-coop_engine_fixture") || !strstr(Core.Params,"-coop_native_acceptance_probe") ||
@@ -2418,6 +2437,7 @@ bool capture_death_camera(float* position,float* rotation) {
 void orbit_death_camera(float yaw,float pitch) {if(g_actor) g_actor->coopnet_orbit_death(yaw,pitch);}
 bool exercise_death_orbit_probe() {
     if(!strstr(Core.Params,"-coop_engine_fixture") || !g_actor || !g_actor->is_coopnet_downed() || g_actor->g_Alive()) return false;
+    if(g_actor->HUDview()) return false;
     const auto physics=capture_body_physics(g_actor);
     if(physics.elements.empty() || g_actor->character_physics_support()->movement()->CharacterExist()) return false;
     float before[3],angles[3],after[3],rotated[3];

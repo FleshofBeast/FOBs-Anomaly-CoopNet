@@ -642,6 +642,7 @@ void CActor::ActorUse()
 extern BOOL firstPersonDeath;
 BOOL CActor::HUDview() const
 {
+	if (m_coopnet_downed) return FALSE;
 	return IsFocused() && (cam_active == eacFirstEye) &&
 		((!m_holder) || (m_holder && m_holder->allowWeapon() && m_holder->HUDView())) && (firstPersonDeath ? g_Alive() : true);
 }

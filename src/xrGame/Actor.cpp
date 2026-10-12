@@ -2577,6 +2577,7 @@ extern	BOOL	g_ShowAnimationInfo		;
 
 void CActor::OnHUDDraw(CCustomHUD*)
 {
+	if (m_coopnet_downed) return;
 	R_ASSERT(IsFocused());
 	//demonized: disable hud when FPCam is on
 	if (!((mstate_real & mcLookout) && !IsGameTypeSingle()) && (!m_FPCam || m_FPCam->hudEnabled))
