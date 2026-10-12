@@ -1,4 +1,4 @@
-param([switch]$FreshGuest,[switch]$Acceptance,[switch]$NaturalCombat,[string]$TestDirectory,[switch]$Resume,[switch]$NativeDefault,[switch]$VisualCapture)
+param([switch]$FreshGuest,[switch]$Acceptance,[switch]$NaturalCombat,[string]$TestDirectory,[switch]$Resume,[switch]$NativeDefault,[switch]$VisualCapture,[switch]$MemoryCapture)
 $ErrorActionPreference='Stop'
 $repo=$PSScriptRoot
 Set-Location $repo
@@ -7,12 +7,43 @@ if ($TestDirectory) { $root=[IO.Path]::GetFullPath($TestDirectory) }
 $source=Join-Path (Split-Path $repo) 'Anomaly-1.5.3/appdata/savedgames'
 $hashes=@{};Get-ChildItem $source -Filter 'player - autosave.*' -File | ForEach-Object {$hashes[$_.FullName]=(Get-FileHash $_.FullName).Hash}
 $owned=@()
+$memorySamples=[Collections.Generic.List[object]]::new()
 try {
  $owned=@(& "$repo/prepare-coopnet-engine-test.ps1" -Launch -LoadFixture -ReplicaProbe -MovementProbe -WorldProbe -WeaponProbe -SharedWorldProbe -NativeWorldProbe -NativeDefaultProbe:$NativeDefault -NativeAcceptanceProbe:$Acceptance -NativeVisualProbe:$VisualCapture -NaturalCombatProbe:$NaturalCombat -SharedHitProbe -FreshQuestProbe:$FreshGuest -TestDirectory $root)
  if($owned.Count -ne 2){throw 'Expected exactly two fixture processes'}
  $watch=[Diagnostics.Stopwatch]::StartNew()
- while($watch.Elapsed.TotalSeconds -lt 150){foreach($process in $owned){if($process.HasExited){throw "Fixture exited early: $($process.Id) code $($process.ExitCode)"}};Start-Sleep -Milliseconds 500}
+ while($watch.Elapsed.TotalSeconds -lt 150) {
+  for($index=0;$index -lt $owned.Count;$index++) {
+   $process=$owned[$index]
+   if($process.HasExited){throw "Fixture exited early: $($process.Id) code $($process.ExitCode)"}
+   if($MemoryCapture) {
+    $process.Refresh()
+    $memorySamples.Add([pscustomobject]@{
+     Seconds=[math]::Round($watch.Elapsed.TotalSeconds,3);Role=@('host','guest')[$index];ProcessId=$process.Id
+     WorkingSetBytes=$process.WorkingSet64;PrivateBytes=$process.PrivateMemorySize64
+     PeakWorkingSetBytes=$process.PeakWorkingSet64;VirtualBytes=$process.VirtualMemorySize64
+    })
+   }
+  }
+  Start-Sleep -Milliseconds 500
+ }
 } finally {
+ if($MemoryCapture -and $memorySamples.Count) {
+  $memorySamples | Export-Csv (Join-Path $root 'memory-samples.csv') -NoTypeInformation
+  $summaries=foreach($role in @('host','guest')) {
+   $samples=@($memorySamples | Where-Object Role -eq $role)
+   $steady=@($samples | Where-Object Seconds -ge 90)
+   [pscustomobject]@{
+    Role=$role;Samples=$samples.Count;SteadySamples=$steady.Count;SteadyStartSeconds=90
+    PeakWorkingSetGiB=[math]::Round(($samples | Measure-Object PeakWorkingSetBytes -Maximum).Maximum/1GB,3)
+    PeakPrivateGiB=[math]::Round(($samples | Measure-Object PrivateBytes -Maximum).Maximum/1GB,3)
+    SteadyWorkingSetGiB=if($steady.Count){[math]::Round(($steady | Measure-Object WorkingSetBytes -Average).Average/1GB,3)}else{$null}
+    SteadyPrivateGiB=if($steady.Count){[math]::Round(($steady | Measure-Object PrivateBytes -Average).Average/1GB,3)}else{$null}
+   }
+  }
+  $summaries | ConvertTo-Json | Set-Content (Join-Path $root 'memory-summary.json')
+  $summaries | Format-Table | Out-String | Write-Output
+ }
  $cleanupErrors=@()
  foreach($process in $owned){if(!$process.HasExited){$process.CloseMainWindow()|Out-Null;if(!$process.WaitForExit(30000)){$process.Refresh();if(!$process.HasExited){Stop-Process -Id $process.Id -ErrorAction SilentlyContinue;$cleanupErrors+='Owned fixture did not close normally'}}}}
  if($cleanupErrors.Count){Write-Warning ($cleanupErrors -join '; ')}

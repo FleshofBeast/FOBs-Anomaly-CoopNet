@@ -449,3 +449,34 @@ worker simulation. Preserve separate host-only world-save guards and host clock,
 weather and story ownership. Loaded-map native bootstrap, canonical reconciliation,
 worker publications and native handoff remain unimplemented; this confirmation
 alone does not prove independent maps or single-player parity.
+
+## 2026-10-12 single-loaded-map process memory baseline
+
+Command: test-coopnet-native-world.ps1 -Acceptance -NaturalCombat -NativeDefault
+-MemoryCapture. Fixture native-world-2039d16f253844bd95f7ecf68bafb5c0 loaded
+Cordon (l01_escape) on both clients. DX11, 1280x720, texture_lod 2 and
+r__no_ram_textures on. Samples taken every approximately 500 ms for 150 seconds;
+290 samples per process, final-minute average uses 117 samples from 90 seconds.
+Raw data: fixture memory-samples.csv; aggregates: memory-summary.json.
+
+| Process | Final-minute resident GiB | Peak resident GiB | Final-minute private commit GiB | Peak private commit GiB |
+| --- | ---: | ---: | ---: | ---: |
+| Host | 1.727 | 1.785 | 4.183 | 4.201 |
+| Guest | 1.753 | 2.074 | 4.209 | 4.218 |
+
+These are total rendered game-process measurements, not incremental map-only
+allocations or headless coordinator memory. Working set measures currently
+resident RAM; private bytes measure private committed virtual memory, not merely
+address-space reservation. GPU VRAM is not included. The final minute is a timed
+loaded-gameplay window, not a claim of a stationary statistical steady state.
+The fixture passed shared native combat, NPC lifecycle, anomaly collision/damage,
+personal state and native bootstrap acknowledgement. Both clients closed normally
+and source saves were unchanged (_build/single-map-memory-acceptance.log).
+
+This supports a one-loaded-map-per-client design for the tested configuration:
+resident RAM stayed below 4 GiB, while private commitment was slightly above it.
+It does not establish heavier-map/mod-pack requirements, per-additional-player
+cost, separate-map hosting cost, or 100-player scalability. The host should retain
+compact canonical state for foreign cells rather than loading their geometry and
+renderable entities. Native host bookkeeping and global persistence still require
+memory; packet routing alone is not the full coordinator responsibility.
