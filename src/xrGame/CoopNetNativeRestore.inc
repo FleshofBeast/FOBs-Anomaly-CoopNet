@@ -50,7 +50,11 @@ bool restore_retained_offline_region(const std::shared_ptr<const RetainedOffline
         if(auto* member=smart_cast<CSE_ALifeMonsterAbstract*>(server)) if(member->m_group_id!=target.squad) return false;
         if(auto* group=smart_cast<CSE_ALifeOnlineOfflineGroup*>(server)) {
             if(group->squad_members().size()!=target.members.size()) return false;
-            for(auto id:target.members) if(group->squad_members().find(id)==group->squad_members().end()) return false;
+            for(auto id:target.members) {
+                const auto member=group->squad_members().find(id);
+                if(member==group->squad_members().end() || !member->second ||
+                    member->second!=registry.object(id,true)) return false;
+            }
         }
     }
     // Bytes are immutable, locally produced, and native-read validated during
@@ -64,6 +68,9 @@ bool restore_retained_offline_region(const std::shared_ptr<const RetainedOffline
         if(!server->Spawn_Read(spawn) || !spawn.r_eof()) return false;
         u16 message;update.r_begin(message);if(message!=M_UPDATE) return false;
         server->UPDATE_Read(update);if(!update.r_eof()) return false;
+        if(auto* group=smart_cast<CSE_ALifeOnlineOfflineGroup*>(server))
+            for(const auto& member:group->squad_members())
+                if(!member.second || member.second!=registry.object(member.first,true)) return false;
     }
     return true;
 }

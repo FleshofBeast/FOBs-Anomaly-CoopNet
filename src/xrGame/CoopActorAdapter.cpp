@@ -916,6 +916,47 @@ bool exercise_offline_checkpoint_probe(double width) {
             if(record.online || record.object!=next.object || record.parent!=next.parent || record.incarnation!=next.incarnation ||
                 record.section!=next.section || record.spawn.empty() || record.update.empty()) return false;
         }
+        auto retained=retain_offline_region(key,width);
+        if(!retained) throw std::runtime_error("Offline native restore retention failed");
+        CSE_ALifeDynamicObject* target=nullptr;
+        CSE_ALifeInventoryItem* inventory=nullptr;
+        for(auto record=checkpoint.objects.rbegin();record!=checkpoint.objects.rend();++record) {
+            if(record->parent==0xffff) continue;
+            auto* candidate=ai().alife().objects().object(record->object,true);
+            auto* item=smart_cast<CSE_ALifeInventoryItem*>(candidate);
+            if(item) {target=candidate;inventory=item;break;}
+        }
+        if(!target || !inventory) throw std::runtime_error("Offline native restore inventory target missing");
+        const float original=inventory->m_fCondition;
+        const float changed=original>.5f ? .2f : .8f;
+        const auto parent=target->ID_Parent;
+        const auto lifetime=alife_lifetimes.at(target);
+        inventory->m_fCondition=changed;target->ID_Parent=0xffff;
+        const bool accepted_parent=restore_retained_offline_region(retained);
+        target->ID_Parent=parent;
+        const bool parent_untouched=inventory->m_fCondition==changed;
+        alife_lifetimes[target]=lifetime+1;
+        const bool accepted_lifetime=restore_retained_offline_region(retained);
+        alife_lifetimes[target]=lifetime;
+        const bool lifetime_untouched=inventory->m_fCondition==changed;
+        if(accepted_parent || accepted_lifetime || !parent_untouched || !lifetime_untouched) {
+            inventory->m_fCondition=original;
+            throw std::runtime_error("Offline native restore accepted stale structure or lifetime");
+        }
+        if(!restore_retained_offline_region(retained) || inventory->m_fCondition!=original ||
+            target->ID_Parent!=parent || alife_lifetimes.at(target)!=lifetime ||
+            ai().alife().objects().object(target->ID,true)!=target)
+            throw std::runtime_error("Offline native restore did not recover inventory state and aliases");
+        coopnet::NativeRegionCheckpoint restored;
+        if(!capture_offline_region_checkpoint(key,width,restored) || restored.objects.size()!=checkpoint.objects.size())
+            throw std::runtime_error("Offline native restore broke recapture closure");
+        for(std::size_t i=0;i<restored.objects.size();++i) {
+            const auto& before=checkpoint.objects[i];const auto& after=restored.objects[i];
+            if(before.object!=after.object || before.parent!=after.parent || before.incarnation!=after.incarnation)
+                throw std::runtime_error("Offline native restore changed dependency identity");
+        }
+        Msg("* CoopNet retained offline restore verified: level %u objects %u inventory %u stale parent and lifetime denied; registry aliases retained",
+            level,static_cast<unsigned>(restored.objects.size()),target->ID);
         Msg("* CoopNet separate-map offline checkpoint verified: host level %u captured level %u objects %u bytes %u stable ALife lifetimes",
             local.level,level,static_cast<unsigned>(decoded.objects.size()),static_cast<unsigned>(bytes.size()));
         return true;

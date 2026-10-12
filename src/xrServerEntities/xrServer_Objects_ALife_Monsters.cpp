@@ -2294,7 +2294,11 @@ void CSE_ALifeOnlineOfflineGroup::STATE_Read(NET_Packet& tNetPacket, u16 size)
 		MEMBERS::value_type pair;
 		load_data(pair.first, tNetPacket);
 		pair.second = 0;
-		m_members.insert(pair);
+		// Fresh loads retain IDs until on_after_game_load binds the members.
+		// Replaying state into a registered group must preserve its live pointers:
+		// associative_vector::insert replaces an existing key's value.
+		if (m_members.find(pair.first) == m_members.end())
+			m_members.insert(pair);
 	}
 #endif
 }

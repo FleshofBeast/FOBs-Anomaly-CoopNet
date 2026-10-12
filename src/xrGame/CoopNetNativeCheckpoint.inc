@@ -1,4 +1,32 @@
 namespace {
+bool checkpoint_detached_read=false;
+int lua_checkpoint_detached_read(lua_State* state) {lua_pushboolean(state,checkpoint_detached_read);return 1;}
+bool install_checkpoint_squad_guard() {
+    ai().script_engine().process_file("sim_squad_scripted");
+    auto* state=ai().script_engine().lua();if(!state)return false;
+    const int top=lua_gettop(state);
+    lua_pushcfunction(state,lua_checkpoint_detached_read);lua_setglobal(state,"coopnet_checkpoint_detached_read");
+    const char* source=
+        "local c=sim_squad_scripted.sim_squad_scripted\n"
+        "if not c then error('checkpoint squad class unavailable') end\n"
+        "if not c.coopnet_checkpoint_guard then\n"
+        " local original=c.init_squad_on_load\n"
+        " if not original then error('checkpoint squad load callback unavailable') end\n"
+        " c.init_squad_on_load=function(self,...)\n"
+        "  if coopnet_checkpoint_detached_read() then return end\n"
+        "  return original(self,...)\n"
+        " end\n"
+        " c.coopnet_checkpoint_guard=true\n"
+        "end\n";
+    const bool ok=luaL_loadbuffer(state,source,strlen(source),"@coopnet_checkpoint_squad_guard")==0 && lua_pcall(state,0,0,0)==0;
+    if(!ok) Msg("! CoopNet checkpoint squad guard failed: %s",lua_tostring(state,-1));
+    lua_settop(state,top);return ok;
+}
+struct DetachedCheckpointRead {
+    bool previous=checkpoint_detached_read;
+    DetachedCheckpointRead(){checkpoint_detached_read=true;}
+    ~DetachedCheckpointRead(){checkpoint_detached_read=previous;}
+};
 bool capture_region_state(const coopnet::RegionKey& key,double width,bool offline_only,
     coopnet::NativeRegionCheckpoint& output) {
     const auto reject=[](const char* reason,u16 id) {
@@ -10,6 +38,7 @@ bool capture_region_state(const coopnet::RegionKey& key,double width,bool offlin
     if(!collect_world_objects || !capture_local_actor(local) || world_level_is_replica() ||
         !ai().get_alife() || !Level().Server || !coopnet::valid_region(key) ||
         !std::isfinite(width) || width<10 || width>4096) return reject("capture context",0xffff);
+    if(!install_checkpoint_squad_guard()) return reject("scripted squad guard",0xffff);
     const auto& registry=ai().alife().objects();
     std::vector<CSE_Abstract*> pending;
     std::set<u16> selected;
@@ -104,6 +133,7 @@ bool capture_region_state(const coopnet::RegionKey& key,double width,bool offlin
         record.spawn.assign(spawn.B.data,spawn.B.data+spawn.B.count);record.update.assign(update.B.data,update.B.data+update.B.count);
         bytes+=22+record.section.size()+record.spawn.size()+record.update.size();
         if(bytes>coopnet::region_checkpoint_limit) return reject("byte capacity",server->ID);
+        DetachedCheckpointRead detached;
         auto* verify=F_entity_Create(record.section.c_str());if(!verify) return reject("native class",server->ID);
         spawn.r_pos=0;
         bool valid=verify->Spawn_Read(spawn) && spawn.r_eof() && verify->ID==record.object && verify->ID_Parent==record.parent &&

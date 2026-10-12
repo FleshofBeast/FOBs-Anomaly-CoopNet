@@ -1840,6 +1840,11 @@ void CActor::coopnet_revive(const Fvector& position)
         skeleton->saved_bones.bones.clear();
     }
     character_physics_support()->in_NetSpawn(server);
+    // The ragdoll replaced the animated skeleton's tracks. Restart stock
+    // actor motions even when their selected IDs match the pre-death cache.
+    m_bAnimTorsoPlayed=false;
+    m_current_legs.invalidate();m_current_torso.invalidate();m_current_head.invalidate();
+    m_current_legs_blend=nullptr;m_current_torso_blend=nullptr;m_current_jump_blend=nullptr;
     m_coopnet_downed=false;
     mstate_wishful=0; m_coopnet_buttons=0; NET_SavedAccel.set(0,0,0); NET_Jump=0;
     character_physics_support()->movement()->SetVelocity(0,0,0);

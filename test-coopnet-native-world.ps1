@@ -18,7 +18,7 @@ try {
  if($cleanupErrors.Count){Write-Warning ($cleanupErrors -join '; ')}
  foreach($path in $hashes.Keys){if((Get-FileHash $path).Hash -ne $hashes[$path]){throw 'Private source save was changed'}}
 }
-$logs=@{};foreach($role in @('host','guest')){$file=Get-ChildItem "$root/$role/appdata/logs" -Filter '*.log'|Sort-Object LastWriteTimeUtc -Descending|Select-Object -First 1;$logs[$role]=Get-Content $file.FullName -Raw;if($logs[$role] -match 'FATAL ERROR|! CoopNet update failed:|UnhandledFilter'){throw "$role runtime failed"};if($logs[$role] -notmatch 'CoopNet session stopped'){throw "$role shutdown missing"}}
+$logs=@{};foreach($role in @('host','guest')){$file=Get-ChildItem "$root/$role/appdata/logs" -Filter '*.log'|Sort-Object LastWriteTimeUtc -Descending|Select-Object -First 1;$logs[$role]=Get-Content $file.FullName -Raw;if($logs[$role] -match 'FATAL ERROR|! CoopNet update failed:|UnhandledFilter|BusyHandsDebug|SCRIPT ERROR|critical Lua error|LUA.*(?:RUNTIME ERROR|error:)'){throw "$role runtime failed"};if($logs[$role] -notmatch 'CoopNet session stopped'){throw "$role shutdown missing"}}
 if($logs.guest -notmatch 'CoopNet client state: connected' -or $logs.guest -notmatch 'CoopNet native stalker frame completed: object'){throw 'Connected guest native NPC frame completion missing'}
 foreach($marker in @('host NPC and quests created','host NPC killed and quests completed/failed','host corpse removed and info withdrawn')){if(!$logs.host.Contains($marker)){throw "Host shared-world fixture incomplete: $marker"}}
 foreach($marker in @('CoopNet NPC spawned: section dog_weak','CoopNet NPC death applied:','CoopNet NPC removed:')){if(!$logs.guest.Contains($marker)){throw "Guest shared-world lifecycle missing: $marker"}}
@@ -40,6 +40,7 @@ if($appliedHits.Count -ne 1 -or [double]$appliedHits[0].Groups[2].Value -gt 0){t
 if ($Acceptance) {
  if($logs.host -notmatch 'CoopNet native checkpoint capture verified: level \d+ objects [1-9]\d* children \d+ bytes [1-9]\d*'){throw 'Live native region checkpoint round-trip missing'}
  if($logs.host -notmatch 'CoopNet separate-map offline checkpoint verified: host level \d+ captured level \d+ objects [1-9]\d* bytes [1-9]\d* stable ALife lifetimes'){throw 'Separate-map offline checkpoint capture missing'}
+ if($logs.host -notmatch 'CoopNet retained offline restore verified: level \d+ objects [1-9]\d* inventory \d+ stale parent and lifetime denied; registry aliases retained'){throw 'Native retained offline restore and rejection checks missing'}
  foreach($marker in @('CoopNet dynamic anomaly probe: host spawned native','CoopNet dynamic anomaly probe: host removed native')) {if(!$logs.host.Contains($marker)){throw "Host dynamic anomaly check missing: $marker"}}
  if(!$logs.guest.Contains('CoopNet dynamic anomaly probe: guest native removal verified')){throw 'Guest dynamic anomaly removal missing'}
  if(!$logs.guest.Contains('CoopNet dynamic anomaly probe: retained lifetime recovered')){throw 'Guest native lifetime recovery missing'}
