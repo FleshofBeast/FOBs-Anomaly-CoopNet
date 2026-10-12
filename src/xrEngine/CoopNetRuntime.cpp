@@ -119,6 +119,8 @@ struct Session {
     std::map<coopnet::Identity,std::uint32_t> offline_bootstrap_offsets;
     coopnet::RegionAssembly offline_bootstrap_assembly;
     bool offline_bootstrap_restored=false;
+    bool offline_bootstrap_ack_pending=false;
+    std::set<coopnet::Identity> offline_bootstrap_acknowledged;
     coopnet::Mode mode = coopnet::Mode::Offline;
     coopnet::ClientState last_client_state = coopnet::ClientState::Offline;
     bool saved_resume_attempt=false;
@@ -1512,6 +1514,12 @@ void update(double) {
         } else {
             session->loot_retries.advance(elapsed);
             session->client.update(elapsed);
+            if(session->offline_bootstrap_ack_pending && session->client.send_region_frame({
+                coopnet::Message::RegionAck,coopnet::Channel::World,coopnet::Delivery::ReliableOrdered,0,
+                coopnet::encode_region_ack({session->offline_bootstrap_key,1,1})})==coopnet::SendResult::Sent) {
+                session->offline_bootstrap_ack_pending=false;
+                Msg("* CoopNet guest offline bootstrap acknowledgement sent: level %u",session->offline_bootstrap_key.level);
+            }
             const auto& failure=session->runtime.last_failure();
             if(!failure.empty() && failure!=session->last_transport_failure) {
                 session->last_transport_failure=failure;
@@ -1885,6 +1893,20 @@ void command(const char* name, const char* arguments) {
             next->host.require_character_profile(strstr(GetCommandLineA(),"-coop_engine_fixture")==nullptr);
             next->host.set_character_validation_ready([] {LocalActorPose host;return capture_local_actor(host);});
             auto* owner=next.get();
+            next->host.set_region_sink([owner](coopnet::Identity player,const coopnet::Frame& frame) {
+                if(!strstr(GetCommandLineA(),"-coop_engine_fixture") || !strstr(GetCommandLineA(),"-coop_native_acceptance_probe") ||
+                    frame.message!=coopnet::Message::RegionAck || frame.sequence) return false;
+                coopnet::RegionAck ack;
+                const auto sent=owner->offline_bootstrap_offsets.find(player);
+                if(!coopnet::decode_region_ack(frame.payload,ack) || ack.epoch!=1 || ack.checkpoint!=1 ||
+                    !(ack.key==owner->offline_bootstrap_key) || owner->offline_bootstrap.empty() ||
+                    sent==owner->offline_bootstrap_offsets.end() || sent->second!=owner->offline_bootstrap.size()) return false;
+                // Restoration is confirmed, but offline prefetch does not authorize
+                // native simulation. A loaded-map lease still needs its own barrier.
+                if(owner->offline_bootstrap_acknowledged.insert(player).second)
+                    Msg("* CoopNet host offline bootstrap restoration acknowledged: player %llu level %u",player,ack.key.level);
+                return true;
+            });
             next->host.set_rejection_handler([](const coopnet::ClientHello& hello,const coopnet::Welcome& welcome) {
                 if(welcome.result==coopnet::Admission::VersionMismatch || welcome.result==coopnet::Admission::BuildMismatch)
                     show_session_mismatch_news(hello.name);
@@ -2064,6 +2086,8 @@ void command(const char* name, const char* arguments) {
                         owner->offline_bootstrap_assembly.clear();return true;
                     }
                     owner->offline_bootstrap_restored=true;
+                    owner->offline_bootstrap_key=chunk.key;
+                    owner->offline_bootstrap_ack_pending=true;
                     Msg("* CoopNet guest host-issued offline bootstrap restored: level %u objects %u bytes %u registry aliases retained",
                         chunk.key.level,static_cast<unsigned>(checkpoint.objects.size()),chunk.total);
                     owner->offline_bootstrap_assembly.clear();

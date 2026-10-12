@@ -42,6 +42,7 @@ if ($Acceptance) {
  if($logs.host -notmatch 'CoopNet separate-map offline checkpoint verified: host level \d+ captured level \d+ objects [1-9]\d* bytes [1-9]\d* stable ALife lifetimes'){throw 'Separate-map offline checkpoint capture missing'}
  if($logs.host -notmatch 'CoopNet retained offline restore verified: level \d+ objects [1-9]\d* inventory \d+ stale parent and lifetime denied; registry aliases retained'){throw 'Native retained offline restore and rejection checks missing'}
  if($logs.host -notmatch 'CoopNet host offline bootstrap streamed: player \d+ level \d+ bytes [1-9]\d*'){throw 'Host offline native bootstrap streaming missing'}
+ if($logs.host -notmatch 'CoopNet host offline bootstrap restoration acknowledged: player \d+ level \d+'){throw 'Host-confirmed native restoration barrier missing'}
  if($logs.guest -notmatch 'CoopNet guest host-issued offline bootstrap restored: level \d+ objects [1-9]\d* bytes [1-9]\d* registry aliases retained'){throw 'Guest native offline registry bootstrap restoration missing'}
  foreach($marker in @('CoopNet dynamic anomaly probe: host spawned native','CoopNet dynamic anomaly probe: host removed native')) {if(!$logs.host.Contains($marker)){throw "Host dynamic anomaly check missing: $marker"}}
  if(!$logs.guest.Contains('CoopNet dynamic anomaly probe: guest native removal verified')){throw 'Guest dynamic anomaly removal missing'}

@@ -423,3 +423,29 @@ was inspected: corpse and spectator menu are visible without detached first-pers
 arms. No critical Lua, BusyHandsDebug or fatal markers appeared in either death
 log. Both clients closed normally; source saves remained unchanged. Larger goal
 paused at the user's request for the night; resume from the work listed above.
+
+## 2026-10-12 resumed: native restoration confirmation
+
+Offline bootstrap restoration now has a reliable guest-to-host acknowledgement.
+The guest queues it only after native restoration succeeds and retries on send
+backpressure. The host requires the sending player to have a completed transfer,
+matching region key, epoch and checkpoint revision; duplicate confirmations are
+idempotent. This confirms prefetch restoration and grants no simulation lease.
+
+DX11 build _build/bootstrap-ack-build.log and native acceptance
+_build/bootstrap-ack-acceptance.log passed. Fixture
+native-world-1de0d967c0b649c19b48f49ce46bab92 proved host receipt of the native
+restoration confirmation alongside natural combat, shared native deaths/removal,
+quest/loot, anomaly damage and portable character saving. Both clients closed;
+source saves were unchanged. No installed deployment or release was made.
+
+Shortest integration path: prove one guest-owned loaded separate map end to end,
+then expand the existing 3x3 ownership lattice. Engine gates requiring integration
+are CALifeUpdateManager update/shedule_Update (currently return for all guest
+replicas), schedule_world_replica (currently suppresses guest online NPC planners),
+and frame playback (currently overrides guest shared entities with host poses).
+These need per-region authority and confirmed native bindings before enabling
+worker simulation. Preserve separate host-only world-save guards and host clock,
+weather and story ownership. Loaded-map native bootstrap, canonical reconciliation,
+worker publications and native handoff remain unimplemented; this confirmation
+alone does not prove independent maps or single-player parity.
