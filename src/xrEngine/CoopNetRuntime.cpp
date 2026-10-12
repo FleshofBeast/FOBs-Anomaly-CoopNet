@@ -203,6 +203,7 @@ struct Session {
     std::uint32_t zone_level=0;
     std::map<std::uint16_t,std::pair<std::uint64_t,std::uint8_t>> zone_states;
     unsigned world_updates=0;
+    std::map<coopnet::Identity,std::pair<unsigned,unsigned>> respawn_entry_levels;
     bool party_loading=false, party_authorized=false;
     double party_elapsed=0;
     std::uint32_t party_source=0;
@@ -379,6 +380,7 @@ void update_party(Session& current,double elapsed) {
     if (current.party_loading) {
         current.party_elapsed+=elapsed;
         if (available && host.level==current.party_status.destination && loaded==required) {
+            for (const auto& member:current.party_members) current.respawn_entry_levels[member.first]={member.second,host.level};
             current.party_loading=false; current.party_barrier.reset();
             current.party_disarmed=true;
             party_status(current,coopnet::PartyStage::Arrived,loaded,required,host.level);
@@ -628,20 +630,10 @@ coopnet::RespawnResult respawn_player(Session& current,coopnet::Identity player,
     if (!capture_actor_condition(pose.object,condition)) return result;
     if (condition.health>0) { result.status=coopnet::RespawnStatus::Alive; return result; }
     if (current.party_loading) { result.status=coopnet::RespawnStatus::Busy; return result; }
-    if (request.target) {
-        LocalActorPose target; bool found=false;
-        const auto* binding=current.entities.find(request.target);
-        if (!binding || binding->generation!=request.target_generation) return result;
-        if (request.target==current.host_actor) found=capture_local_actor(target);
-        else for (const auto& participant:current.host.session().players()) if (participant.connected) {
-            const auto guest=current.guests.find(participant.id);
-            if (guest!=current.guests.end() && guest->second.entity==request.target && guest->second.generation==request.target_generation)
-                found=capture_guest_actor(guest->second.object,target);
-        }
-        ActorConditionState health;
-        if (!found || target.object==pose.object || target.level!=pose.level || !capture_actor_condition(target.object,health) || health.health<=0) return result;
-        for (unsigned axis=0;axis<3;++axis) result.position[axis]=target.position[axis];
-    } else if (!living_player_position(current,pose.object,pose.level,result.position.data())) { result.status=coopnet::RespawnStatus::NoLivingPlayer; return result; }
+    // Spectator selection never changes the player's recovery destination.
+    float living[3];
+    if (!living_player_position(current,pose.object,pose.level,living)) { result.status=coopnet::RespawnStatus::NoLivingPlayer; return result; }
+    if (!capture_map_entry_respawn(pose.object,pose.level,result.position.data())) return result;
     if (!respawn_actor(pose.object,pose.level,result.position.data())) return result;
     result.status=coopnet::RespawnStatus::Accepted;
     const auto revived=current.guests.find(player);
@@ -653,7 +645,7 @@ coopnet::RespawnResult respawn_player(Session& current,coopnet::Identity player,
     for (const auto& participant:current.host.session().players()) if (participant.id==player && player!=current.host.session().players()[0].id) {
         current.guest_conditions[participant.character]={1,1,0}; save_guest_state(current,participant.character);
     }
-    Msg("* CoopNet host respawn accepted: player %llu at living teammate %.3f %.3f %.3f",player,result.position[0],result.position[1],result.position[2]);
+    Msg("* CoopNet host respawn accepted: player %llu at map entry %.3f %.3f %.3f",player,result.position[0],result.position[1],result.position[2]);
     return result;
 }
 coopnet::InventoryResult transact_inventory(Session& current, coopnet::Identity player, const coopnet::InventoryRequest& request) {
@@ -737,9 +729,13 @@ void exercise_respawn_probe(Session& current,double elapsed) {
         float position[3],rotation[3];
         if(!exercise_death_orbit_probe()) throw std::runtime_error("Host death ragdoll or anchored orbit failed");
         if (!selected || !spectator_pose(position,rotation)) throw std::runtime_error("Host spectator selection failed");
-        if (!request_respawn()) throw std::runtime_error("Host respawn at guest failed");
+        float entry[3];
+        if (!capture_map_entry_respawn(host.object,host.level,entry) || !request_respawn()) throw std::runtime_error("Host map entry respawn failed");
+        LocalActorPose revived;
+        if (!capture_local_actor(revived)) throw std::runtime_error("Host revival pose unavailable");
+        for (unsigned axis=0;axis<3;++axis) if (std::abs(revived.position[axis]-entry[axis])>.5f) throw std::runtime_error("Host respawn destination differed from its map entry");
         current.respawn_probe_phase=3; current.respawn_probe_wait=0;
-        Msg("* CoopNet respawn probe: host respawned at guest");
+        Msg("* CoopNet respawn probe: host respawned at own map entry");
     } else if (current.respawn_probe_phase==3 && current.respawn_probe_wait>=5) {
         clear_spectator();
         if (!down_actor(host.object) || !down_actor(guest.object) || can_respawn() || request_respawn()) throw std::runtime_error("No-living-player respawn guard failed");
@@ -2114,6 +2110,19 @@ unsigned long long spectator_target() { return session ? session->spectated_acto
 bool spectator_pose(float* position,float* rotation) {
     return player_downed() && capture_death_camera(position,rotation);
 }
+bool map_transition_checkpoint(unsigned short object,unsigned level) {
+    if (!session || session->mode!=coopnet::Mode::Host) return false;
+    for (const auto& player:session->host.session().players()) if (player.connected) {
+        LocalActorPose local;
+        bool matches=false;
+        if (player.id==session->host.session().players()[0].id) matches=capture_local_actor(local) && local.object==object;
+        else {const auto guest=session->guests.find(player.id);matches=guest!=session->guests.end() && guest->second.object==object;}
+        if (!matches) continue;
+        const auto entry=session->respawn_entry_levels.find(player.id);
+        return entry!=session->respawn_entry_levels.end() && entry->second.first==player.generation && entry->second.second==level;
+    }
+    return false;
+}
 bool can_respawn() {
     LocalActorPose local;
     if (!player_downed() || !capture_local_actor(local)) return false;
@@ -2133,10 +2142,6 @@ bool request_respawn() {
         if (!can_respawn()) return false;
         LocalActorPose local; if (!capture_local_actor(local)) return false;
         coopnet::RespawnRequest request; request.level=local.level; request.sequence=++session->respawn_sequence;
-        if (session->spectated_actor) {
-            float position[3],rotation[3]; if (!spectator_pose(position,rotation)) return false;
-            request.target=session->spectated_actor; request.target_generation=session->spectated_generation;
-        }
         if (session->mode==coopnet::Mode::Host) {
             const auto* binding=session->entities.find(session->host_actor); if (!binding) return false;
             request.actor=session->host_actor; request.generation=binding->generation;
@@ -2153,7 +2158,7 @@ bool request_respawn() {
 }
 void respawn_status(char* output,unsigned capacity) {
     if (!output || !capacity) return;
-    const char* text=can_respawn() ? "Respawn at a living teammate's position." : "No living teammate is available. Wait for one or load a save.";
+    const char* text=can_respawn() ? "Respawn at your map entry position." : "No living teammate is available. Wait for one or load a save.";
     if (session && !session->respawn_message.empty() && (session->client.respawn_pending() || can_respawn())) text=session->respawn_message.c_str();
     snprintf(output,capacity,"%s",text);
 }
@@ -2278,6 +2283,7 @@ bool select_spectator(unsigned long long,unsigned) { return false; }
 void clear_spectator() {}
 unsigned long long spectator_target() { return 0; }
 bool spectator_pose(float*,float*) { return false; }
+bool map_transition_checkpoint(unsigned short,unsigned) { return false; }
 bool can_respawn() { return false; }
 bool request_respawn() { return false; }
 void respawn_status(char* output,unsigned capacity) { if (output && capacity) output[0]=0; }

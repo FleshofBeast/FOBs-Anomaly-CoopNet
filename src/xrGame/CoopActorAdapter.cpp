@@ -2439,6 +2439,42 @@ bool down_actor(std::uint16_t object) {
     actor->KillEntity(actor->ID(),TRUE);
     return actor->is_coopnet_downed();
 }
+bool capture_map_entry_respawn(std::uint16_t object,std::uint32_t level,float* position) {
+    LocalActorPose local;
+    if (!position || !capture_local_actor(local) || local.level!=level) return false;
+    auto* actor=smart_cast<CActor*>(Level().Objects.net_Find(object));
+    if (!actor || actor->getDestroy() || (actor!=g_actor && !actor->is_coopnet_guest())) return false;
+    Fvector entry=actor->coopnet_map_entry_position();
+    if (!map_transition_checkpoint(object,level)) {
+        string_path path; FS.update_path(path,"$game_config$","plugins\\new_game_start_locations.ltx");
+        if (!FS.exist(path)) return false;
+        CInifile starts(path,TRUE);
+        std::string faction=actor->CharacterInfo().Community().id().c_str();
+        if (faction.compare(0,6,"actor_")==0) faction.erase(0,6);
+        const std::string section=faction+"_start_locations";
+        if (!starts.section_exist(section.c_str())) return false;
+        bool found=false; float nearest=flt_max;
+        for (u32 row=0;row<starts.line_count(section.c_str());++row) {
+            LPCSTR location=nullptr,value=nullptr;
+            if (!starts.r_line(section.c_str(),row,&location,&value) || !starts.section_exist(location) ||
+                !starts.line_exist(location,"gvid") || !starts.line_exist(location,"x") ||
+                !starts.line_exist(location,"y") || !starts.line_exist(location,"z")) continue;
+            const auto graph=starts.r_u32(location,"gvid");
+            if (!ai().game_graph().valid_vertex_id(graph) || static_cast<std::uint32_t>(ai().game_graph().vertex(graph)->level_id())+1!=level) continue;
+            Fvector candidate; candidate.set(starts.r_float(location,"x"),starts.r_float(location,"y"),starts.r_float(location,"z"));
+            if (!_valid(candidate)) continue;
+            const float distance=candidate.distance_to_sqr(actor->coopnet_map_entry_position());
+            if (faction=="stalker" && std::string(location)=="rookie_village") {entry=candidate;found=true;break;}
+            if (!found || distance<nearest) {entry=candidate;nearest=distance;found=true;}
+        }
+        if (!found) return false;
+    }
+    if (!_valid(entry)) return false;
+    const auto node=ai().level_graph().vertex(actor->ai_location().level_vertex_id(),entry);
+    if (!ai().level_graph().valid_vertex_id(node)) return false;
+    for (unsigned axis=0;axis<3;++axis) position[axis]=entry[axis];
+    return true;
+}
 bool respawn_actor(std::uint16_t object,std::uint32_t level,const float* position) {
     LocalActorPose local;
     if (!position || !capture_local_actor(local) || local.level!=level) return false;

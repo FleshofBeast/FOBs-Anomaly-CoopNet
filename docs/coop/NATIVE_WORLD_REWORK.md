@@ -350,3 +350,34 @@ personal loot, portable exit saving and source-save preservation also passed.
 Paired 07:22:50 frames were inspected and show the guest in the host's electrical
 field and the owning client's native electrical overlay. This verifies a local
 recovery case, not full follower support or internet/session-duration parity.
+
+## Respawn destination revision (development, 2026-10-11)
+
+The requested rule now replaces periodic XYZ snapshots: a player voluntarily
+respawns at their last map arrival position, independently of spectator selection.
+Before a transition checkpoint exists, choose an existing faction start location
+on the player's loaded map from `plugins/new_game_start_locations.ltx`. Free
+stalkers in Cordon use Rookie Village. Other factions choose the configured
+starting point nearest their native session arrival. Do not send a player to a
+faction start on a different unloaded map.
+
+The current checkpoint is scoped to the connected player/generation and session;
+persistence across reconnects and saves, independent map travel and ownership
+handoff are still unfinished. Full-party recovery voting has portable coverage
+but has not been wired into gameplay. The additional requested teammate revive
+must validate living rescuer, target lifetime, map, body proximity and reliable
+owner revival; it remains unfinished. Voluntary spectator mode and respawn remain
+part of the requested outcome. No installed build or release was changed.
+
+Validation of this increment: DX11 build `_build/faction-entry-prefix-build.log`
+and all 24 portable suites passed. The two-client native death fixture
+`_build/death-orbit-627ba2e4ae7a4c1297fb26c9ea74e154` passed after correcting
+native `actor_*` community IDs to the configuration's faction section names.
+Both host and guest respawned at Rookie Village XYZ
+(-221.083, -19.941, -168.182); host position was compared to its recovery point
+with another teammate selected. Native movement capsules, equipment retention,
+death orbit/menu, normal shutdown and source-save hashes passed. Final logs
+contain no BusyHandsDebug, critical Lua or fatal error. Host and guest screenshots
+were inspected. This proves the Cordon starting fallback, not every faction's
+visual spawn placement, transition persistence, remote corpse visual parity,
+squad-vote gameplay or teammate revival.

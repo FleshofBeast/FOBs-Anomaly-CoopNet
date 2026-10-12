@@ -51,6 +51,7 @@ void set_player_nameplates(const std::vector<PlayerNameplate>& labels);
 void draw_player_nameplates();
 bool local_actor_downed();
 bool respawn_actor(std::uint16_t object,std::uint32_t level,const float* position);
+bool capture_map_entry_respawn(std::uint16_t object,std::uint32_t level,float* position);
 bool down_actor(std::uint16_t object);
 // Host-created native records stay inside the host process. They are never accepted from peers.
 struct GuestInventoryItem {

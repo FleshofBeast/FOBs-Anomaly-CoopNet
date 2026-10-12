@@ -31,6 +31,7 @@ bool host_region_relevant(std::uint32_t level,const float* position);
 bool party_level_change_allowed();
 bool party_controls_enabled();
 bool player_downed();
+bool map_transition_checkpoint(unsigned short object,unsigned level);
 bool can_respawn();
 bool request_respawn();
 struct SpectatorPlayer { unsigned long long entity=0; unsigned generation=0; std::string name; bool alive=false; };

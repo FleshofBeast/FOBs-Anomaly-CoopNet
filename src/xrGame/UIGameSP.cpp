@@ -100,7 +100,7 @@ public:
                 Msg("* CoopNet spectator UI probe: player selection and A/D cycle passed"); break;
             }
         }
-        const char* text=engine_coopnet::spectator_target() ? "Right-drag / arrows: orbit death location\\nA / D: choose teammate\\nEnter: respawn at this player" : "Right-drag / arrows: orbit death location\\nChoose a living teammate to respawn.\\nEsc: main menu";
+        const char* text=engine_coopnet::spectator_target() ? "Right-drag / arrows: orbit death location\\nA / D: choose teammate\\nEnter: respawn at your map entry" : "Right-drag / arrows: orbit death location\\nEnter: respawn at your map entry.\\nEsc: main menu";
         status->TextItemControl()->SetText(text);
         CUIDialogWnd::Update();
     }
@@ -111,7 +111,7 @@ public:
         }
         if (action==WINDOW_KEY_PRESSED && key==DIK_ESCAPE) { engine_coopnet::clear_spectator(); HideDialog(); MainMenu()->Activate(true); return true; }
         if (action==WINDOW_KEY_PRESSED && (key==DIK_A || key==DIK_D)) { Cycle(key==DIK_A ? -1 : 1); return true; }
-        if (action==WINDOW_KEY_PRESSED && (key==DIK_RETURN || key==DIK_NUMPADENTER)) { if (engine_coopnet::spectator_target()) engine_coopnet::request_respawn(); return true; }
+        if (action==WINDOW_KEY_PRESSED && (key==DIK_RETURN || key==DIK_NUMPADENTER)) { engine_coopnet::request_respawn(); return true; }
         return CUIDialogWnd::OnKeyboardAction(key,action);
     }
     bool OnMouseAction(float x,float y,EUIMessages action) override {

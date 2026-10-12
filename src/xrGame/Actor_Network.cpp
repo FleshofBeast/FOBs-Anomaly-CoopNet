@@ -720,6 +720,8 @@ BOOL CActor::net_Spawn(CSE_Abstract* DC)
 
 	//Alun: In theory it will call SwitchNightVision 'true' when outfit or helmet spawn and moved to slot if m_bNightVisionOn is true
 	m_bNightVisionOn = !!m_trader_flags.test(CSE_ALifeTraderAbstract::eTraderFlagNightVisionActive);
+	// Capture once on native spawn. Revival does not run net_Spawn.
+	m_coopnet_map_entry_position = Position();
 	if (g_actor == this) engine_coopnet::local_actor_spawned();
 
 	return TRUE;

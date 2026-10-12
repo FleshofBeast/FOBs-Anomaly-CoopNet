@@ -36,7 +36,7 @@ foreach($role in @('host','guest')) {
     }
     if(!(Get-ChildItem "$fixtureRoot/$role/appdata/screenshots" -File -ErrorAction SilentlyContinue)){throw "$role death screenshots missing"}
 }
-foreach($marker in @('guest equipment retained; rounds 2','host respawned at guest','all dead; respawn disabled and host denied request')) {
+foreach($marker in @('guest equipment retained; rounds 2','host respawned at own map entry','all dead; respawn disabled and host denied request')) {
     if(!$logs.host.Contains($marker)){throw "Host respawn acceptance missing: $marker"}
 }
 if(!$logs.guest.Contains('guest living after host approval')){throw 'Guest did not recover after host approval'}
