@@ -1,10 +1,25 @@
 #include "../../src/CoopNet/HostPump.h"
 #include "../../src/CoopNet/ClientPump.h"
+#include "../../src/CoopNet/SquadRecovery.h"
 #include <cstdlib>
 #include <iostream>
 using namespace coopnet;
 void require(bool value) { if (!value) std::abort(); }
 int main() {
+    SquadRecoveryVote vote;
+    require(vote.update({1,2},true));const auto first_round=vote.round();
+    require(!vote.vote(3,first_round) && !vote.vote(1,first_round+1));
+    require(vote.vote(1,first_round) && vote.vote(1,first_round));
+    require(vote.votes().size()==1 && !vote.unanimous());
+    require(vote.update({1,2,3},true) && vote.vote(2,first_round) && !vote.unanimous());
+    require(vote.update({1,2},true) && vote.unanimous()); // disconnected player no longer blocks
+    require(vote.finish(first_round) && !vote.finish(first_round)); // once per wipe
+    require(vote.update({1,2},true) && vote.round()!=first_round && !vote.vote(1,first_round));
+    require(!vote.update({1,1},true) && !vote.update({0,2},true));
+    require(vote.vote(1,vote.round()) && vote.update({1,2},false) && !vote.active());
+    require(vote.update({1},true) && vote.votes().empty() && !vote.unanimous());
+    require(vote.vote(1,vote.round()) && vote.unanimous());
+    require(vote.update({},true) && !vote.active());
     RespawnRequest request{20,1,10,1,10,1},decoded;
     const auto request_bytes=encode_respawn_request(request);
     require(decode_respawn_request(request_bytes,decoded));

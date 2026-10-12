@@ -141,8 +141,28 @@ the exact caption "Everyone is Dead, Press F to Pay Respects". Each connected
 player must press F once; this is a unanimous vote, and the host respawns the
 whole squad only after all eligible players have voted. Show vote progress and
 handle disconnection/roster changes without counting duplicate keypresses.
-This outcome is not implemented yet; it replaces the old all-dead denial-only
-test expectation and must be integrated and gameplay-verified before acceptance.
+Each player must recover within their own map and cell. Do not move distant
+party members to a shared host/hub location. Validate separate safe positions
+against each player's region, native navigation, collision and hazards. If a
+cell has no valid safe position, show a blocked recovery result instead of
+silently teleporting outside it. The vote is shared; placement is individual.
+
+SquadRecovery.h now implements host-side unanimous voting with wipe-round
+identity, duplicate-vote idempotency, disconnection handling, newcomer voting
+and cancellation when anyone revives. Portable RespawnTests exercise those
+cases; all suites are running in _build/squad-recovery-vote-tests.log (session
+63053, completed exit 0; all 24 portable suites passed). Network vote progress,
+exact F-key caption/input, host-authorized
+per-cell placement and simultaneous client revival are not integrated yet.
+This replaces the old all-dead denial-only test expectation and must be
+integrated and gameplay-verified before acceptance.
+
+Latest user correction: ordinary individual respawns also use a validated safe
+location in that dead player's own cell, never a teammate's position. Stay in
+spectator mode until the player explicitly chooses to respawn. Spectator
+selection must not supply respawn coordinates. Keep unanimous F-key recovery
+for the all-dead case. Existing teammate-based placement and its tests must be
+replaced; this correction has not yet been wired into native runtime or UI.
 No installed client was updated. This remains development work and does not
 establish safe worker import, reconstruction or cell ownership handoff.
 
