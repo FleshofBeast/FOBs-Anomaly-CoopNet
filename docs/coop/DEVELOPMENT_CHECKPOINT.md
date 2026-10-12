@@ -54,7 +54,7 @@ behavior. The corrected separate-map acceptance passed.
 
 ## Paused work checkpoint (2026-10-11)
 
-The goal is paused at the user's request. The current development commit also
+The user resumed the goal after this pause. The checkpoint commit also
 contains group-aware capture in CoopNetNativeCheckpoint.inc: squad groups and
 their members are captured together, including members outside the root cell.
 The native build passed in _build/checkpoint-squad-closure-build.log. The next
@@ -69,9 +69,25 @@ replaying saved native state. This addition has not been compiled or tested;
 it does not implement fresh-object reconstruction or ownership handoff.
 
 The user reported a duplicate T-posing player model following a sliding death
-ragdoll. This remains unfixed and needs render-ownership diagnosis and visual
-verification on a slope from both clients. Earlier death acceptance does not
-establish that this duplicate-model issue is resolved.
+ragdoll. Host presentation now removes the living guest proxy when native
+health reaches zero, leaving the native corpse as its only body. The build and
+death acceptance passed in _build/death-duplicate-proxy-build.log and
+_build/death-duplicate-proxy-acceptance.log, fixture
+_build/death-orbit-82e15608bd6447d090ae907cea84a69c. The test also checks proxy
+removal between native death and respawn. Host screenshot inspection showed the
+corpse without an upright duplicate. Guest screenshot inspection still showed
+the dead host proxy upright: remote player ragdoll replication remains missing.
+The indoor fixture does not prove sliding-corpse parity on a slope.
+
+Cell capture now skips unsaveable inventory children as native
+CALifeObjectRegistry::save does. The previous failure rejected such a child
+before emitting a checkpoint. Native build passed in
+_build/checkpoint-unsaveable-children-build.log. Native acceptance passed in
+_build/checkpoint-unsaveable-children-acceptance.log, fixture
+_build/native-world-91dbb0518526417c890cbfbeae3dfba4. Both fixture clients closed
+and source saves remained unchanged. No build or fixture sessions remain live.
+Retained offline replay compiled in these builds but has no runtime restore
+probe yet; its safe registry reconstruction and handoff limitations remain.
 
 These checks prove capture and the listed regression behavior, not restore,
 lease handoff, remote-map simulation, distant event parity or Internet smoothing.

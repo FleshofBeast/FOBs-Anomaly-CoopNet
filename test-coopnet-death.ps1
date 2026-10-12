@@ -40,4 +40,7 @@ foreach($marker in @('guest equipment retained; rounds 2','host respawned at gue
     if(!$logs.host.Contains($marker)){throw "Host respawn acceptance missing: $marker"}
 }
 if(!$logs.guest.Contains('guest living after host approval')){throw 'Guest did not recover after host approval'}
+if($logs.host -notmatch '(?s)CoopNet player downed:.*?CoopNet remote actor visual removed:.*?CoopNet player respawned:') {
+    throw 'Guest living visual was not removed during native death before respawn'
+}
 Write-Output "DEATH_ORBIT_PASS: $fixtureRoot; host/guest native ragdoll, fixed death anchor, orbit input, menu, revival, retained ammunition and all-dead guard; source saves unchanged."

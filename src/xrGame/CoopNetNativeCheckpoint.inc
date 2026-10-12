@@ -56,7 +56,10 @@ bool capture_region_state(const coopnet::RegionKey& key,double width,bool offlin
         auto* server=pending[index];
         if(pending.size()>4096 || smart_cast<CSE_ALifeCreatureActor*>(server) || private_quest_followers.count(server->ID)) return reject("object scope",server->ID);
         auto* dynamic=smart_cast<CSE_ALifeDynamicObject*>(server);
-        if(dynamic && !dynamic->can_save()) return reject("unsaveable dependency",server->ID);
+        if(dynamic && !dynamic->can_save()) {
+            if(strstr(Core.Params,"-coop_engine_fixture")) Msg("! CoopNet unsaveable checkpoint dependency: section %s parent %u",server->s_name.c_str(),server->ID_Parent);
+            return reject("unsaveable dependency",server->ID);
+        }
         const bool online=!dynamic || dynamic->m_bOnline;
         if(offline_only && online) return reject("online dependency in offline cell",server->ID);
         auto* group=smart_cast<CSE_ALifeOnlineOfflineGroup*>(server);
@@ -68,6 +71,9 @@ bool capture_region_state(const coopnet::RegionKey& key,double width,bool offlin
             auto* child_server=registry.object(child,true);
             if(!child_server) child_server=smart_cast<CSE_ALifeDynamicObject*>(Level().Server->ID_to_entity(child));
             if(!child_server || child_server->ID_Parent!=server->ID || selected.count(child)) return reject("inventory ownership",child);
+            // Native ALife persistence omits unsaveable inventory children
+            // (including bolts); their presence must not reject the parent.
+            if(!child_server->can_save()) continue;
             add(child_server);
         }
         if(group) for(const auto& member:group->squad_members()) {

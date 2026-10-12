@@ -1697,6 +1697,13 @@ void update(double) {
             if (session->mode==coopnet::Mode::Host && native_world_requested()) {
                 std::set<coopnet::Identity> visible;
                 for(const auto& entry:session->guests) {
+                    ActorConditionState condition;
+                    if(capture_actor_condition(entry.second.object,condition) && condition.health<=0) {
+                        // The native actor owns its physics-driven corpse. Leaving
+                        // the living presentation proxy here draws a second body.
+                        remove_remote_actor(entry.second.entity);
+                        continue;
+                    }
                     LocalActorPose native;if(!capture_guest_actor(entry.second.object,native)) continue;
                     RemoteActorPose pose;pose.entity=entry.second.entity;pose.generation=entry.second.generation;pose.level=native.level;pose.movement=native.movement;
                     std::memcpy(pose.visual,native.visual,sizeof(pose.visual));
