@@ -24,12 +24,14 @@ int main() {
     });
     ClientPump first,second,rejected;
     bool received_first=false,received_second=false,inventory_first=false,inventory_second=false;
+    std::set<Identity> transfer_ids;
     auto connect=[&](ClientPump& client,Identity id,Connection connection,const Welcome* saved=nullptr) {
         auto link=MemoryTransport::pair();require(server.host().attach(connection,std::move(link.second)));
         client.start(std::move(link.first),id,{10,20},saved);client.set_character_profile(character(id));
     };
     first.set_baseline_sink([&](const WorldBaseline& manifest,const std::vector<std::uint8_t>& data) {
-        require(same_baseline(manifest,world) && data==*bytes);received_first=true;return true;
+        require(manifest.level==world.level && manifest.scope==world.scope && manifest.size==world.size && manifest.digest==world.digest && data==*bytes);
+        require(transfer_ids.insert(manifest.id).second);received_first=true;return true;
     });
     second.set_baseline_sink([&](const WorldBaseline&,const std::vector<std::uint8_t>& data) {received_second=data==*bytes;return true;});
     first.set_inventory_view_sink([&](const InventoryView& view) {

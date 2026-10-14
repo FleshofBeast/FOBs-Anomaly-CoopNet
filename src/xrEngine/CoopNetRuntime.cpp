@@ -1228,8 +1228,13 @@ void send_client_controls(Session& current, double elapsed) {
     if (!capture_local_controls(controls)) return;
     LocalActorPose local;
     if (!capture_local_actor(local)) return;
+    // A dedicated coordinator has no native host actor to choose an initial
+    // position. After loading its canonical world, report the native saved
+    // arrival pose through the ordinary owner channel before awaiting its echo.
+    const bool dedicated_arrival=current.client.roster() && current.client.roster()->current().dedicated &&
+        current.client.baseline_acknowledged() && current.placed_incarnation!=local.incarnation;
     if (current.world_probe && (!current.client.baseline_acknowledged() ||
-        current.placed_incarnation!=local.incarnation)) return;
+        (current.placed_incarnation!=local.incarnation && !dedicated_arrival))) return;
     if (!due && current.controls_sent && controls.buttons==current.last_sent_buttons) return;
     current.input_sequence += (std::max)(due,1u);
     coopnet::ActorPresence owned;
@@ -1237,7 +1242,7 @@ void send_client_controls(Session& current, double elapsed) {
         if (actor.player == current.client.session().welcome().player && actor.level == controls.level) owned = actor;
     });
     if (!owned.entity) return;
-    if (current.world_probe && (current.placed_entity!=owned.entity || current.placed_generation!=owned.generation)) return;
+    if (current.world_probe && !dedicated_arrival && (current.placed_entity!=owned.entity || current.placed_generation!=owned.generation)) return;
     coopnet::ActorInput input{owned.entity,owned.generation,owned.level,current.input_sequence,
         controls.buttons,controls.yaw,controls.pitch};
     input.owner_pose=true; input.motion_epoch=current.local_motion_epoch;
