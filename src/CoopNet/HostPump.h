@@ -541,7 +541,7 @@ public:
     }
     const HostSession& session() const { return session_; }
     unsigned ready_participants() const {
-        unsigned count = session_.mode() == Mode::Host ? 1u : 0u;
+        unsigned count = session_.mode() == Mode::Host && !session_.dedicated() ? 1u : 0u;
         for (const auto& peer : peers_) if (peer.ready && peer.transport->connected()) ++count;
         return count;
     }
@@ -640,8 +640,12 @@ public:
         if (!tokens) throw std::invalid_argument("Missing reconnect token source");
         session_.start(id, character, build); id_ = id; revision_ = 0; tokens_ = std::move(tokens);
     }
+    void start_dedicated(Identity id, BuildIdentity build, std::function<Identity()> tokens) {
+        if (!tokens) throw std::invalid_argument("Missing reconnect token source");
+        session_.start_dedicated(id, build); id_ = id; revision_ = 0; tokens_ = std::move(tokens);
+    }
     bool attach(Connection id, std::unique_ptr<Transport> transport) {
-        if (!transport || !id || session_.mode() != Mode::Host || peers_.size() >= 3) return false;
+        if (!transport || !id || session_.mode() != Mode::Host || peers_.size() >= (session_.dedicated() ? 4u : 3u)) return false;
         for (const auto& peer : peers_) if (peer.id == id) return false;
         Peer peer{}; peer.id = id; peer.transport = std::move(transport);
         peers_.push_back(std::move(peer)); return true;

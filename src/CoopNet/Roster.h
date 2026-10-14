@@ -10,9 +10,10 @@ struct Roster {
     Identity session = 0;
     std::uint32_t revision = 0;
     std::vector<Participant> participants;
+    bool dedicated = false;
 };
 inline bool valid_roster(const Roster& roster) {
-    if (!roster.session || roster.participants.empty() || roster.participants.size() > 4) return false;
+    if (!roster.session || (!roster.dedicated && roster.participants.empty()) || roster.participants.size() > 4) return false;
     unsigned hosts = 0;
     for (std::size_t i = 0; i < roster.participants.size(); ++i) {
         const auto& entry = roster.participants[i];
@@ -22,7 +23,7 @@ inline bool valid_roster(const Roster& roster) {
             if (roster.participants[j].player == entry.player ||
                 roster.participants[j].character == entry.character) return false;
     }
-    return hosts == 1;
+    return hosts == (roster.dedicated ? 0u : 1u);
 }
 inline std::vector<std::uint8_t> encode_roster(const Roster& roster) {
     if (!valid_roster(roster)) throw std::invalid_argument("Invalid roster");
@@ -33,12 +34,16 @@ inline std::vector<std::uint8_t> encode_roster(const Roster& roster) {
         writer.integer(entry.player, 8); writer.integer(entry.character, 8);
         writer.integer(entry.generation, 4); writer.integer(entry.connected ? 1 : 0, 1);
     }
+    // Preserve the listen-server wire layout. An explicit trailer distinguishes
+    // dedicated rosters from malformed listen-server rosters missing their host.
+    if (roster.dedicated) writer.integer(1, 1);
     return writer.bytes;
 }
 inline bool decode_roster(const std::vector<std::uint8_t>& bytes, Roster& output) {
     Reader reader(bytes); Roster value; std::uint64_t revision, count;
     if (!reader.integer(value.session, 8) || !reader.integer(revision, 4) ||
-        !reader.integer(count, 1) || count == 0 || count > 4 || reader.remaining() != count * 21) return false;
+        !reader.integer(count, 1) || count > 4 ||
+        (reader.remaining() != count * 21 && reader.remaining() != count * 21 + 1)) return false;
     value.revision = static_cast<std::uint32_t>(revision);
     for (std::uint64_t i = 0; i < count; ++i) {
         Participant entry; std::uint64_t generation, connected;
@@ -47,11 +52,17 @@ inline bool decode_roster(const std::vector<std::uint8_t>& bytes, Roster& output
         entry.generation = static_cast<std::uint32_t>(generation); entry.connected = connected != 0;
         value.participants.push_back(entry);
     }
+    if (reader.remaining()) {
+        std::uint64_t dedicated;
+        if (!reader.integer(dedicated, 1) || dedicated != 1) return false;
+        value.dedicated = true;
+    }
     if (!valid_roster(value)) return false;
     output = std::move(value); return true;
 }
 inline Roster make_roster(const HostSession& host, Identity session, std::uint32_t revision) {
     Roster roster{session, revision, {}};
+    roster.dedicated = host.dedicated();
     for (const auto& entry : host.players())
         if (entry.id) roster.participants.push_back({entry.id, entry.character, entry.generation, entry.connected});
     if (host.mode() != Mode::Host || !valid_roster(roster)) throw std::logic_error("No active host roster");

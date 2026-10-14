@@ -57,10 +57,19 @@ class HostSession {
     BuildIdentity build_;
     std::array<Player, 4> players_{};
     Identity next_player_ = 2;
+    bool dedicated_ = false;
 public:
     Mode mode() const { return mode_; }
+    bool dedicated() const { return dedicated_; }
     const std::array<Player, 4>& players() const { return players_; }
-    void stop() { mode_ = Mode::Offline; session_ = 0; players_ = {}; next_player_ = 2; }
+    void stop() { mode_ = Mode::Offline; session_ = 0; players_ = {}; next_player_ = 2; dedicated_ = false; }
+    // No synthetic host character: all four slots belong to network clients.
+    // Identity 1 remains reserved so existing client/resume identities stay valid.
+    void start_dedicated(Identity session, BuildIdentity build) {
+        if (!session || !build.game || mode_ != Mode::Offline)
+            throw std::invalid_argument("Invalid dedicated session start");
+        session_ = session; build_ = build; dedicated_ = true; mode_ = Mode::Host;
+    }
     void start(Identity session, Identity character, BuildIdentity build) {
         if (!session || !character || !build.game || mode_ != Mode::Offline)
             throw std::invalid_argument("Invalid host session start");
