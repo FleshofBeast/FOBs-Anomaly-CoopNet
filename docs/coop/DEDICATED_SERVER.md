@@ -71,6 +71,25 @@ and script behavior. A coordinator with client simulation must retain those
 systems on workers. A fully native headless-world alternative must deliberately
 restore and verify them rather than treating a console window as proof.
 
+### Canonical world bootstrap coordinator
+
+`DedicatedBootstrap.h` owns the shared baseline and sequences each player's
+profile admission, world transfer, native-load acknowledgement, actor assignment,
+level acknowledgement and personal inventory restoration without a local actor.
+Its required import callback must perform game-data validation and checkpoint
+storage before acceptance. The caller must verify the supplied baseline digest.
+An authenticated reconnect uses the retained server profile, so an older local
+copy cannot overwrite that checkpoint. A new connection generation repeats the
+world-load barrier; another player's delayed load does not block it.
+
+`DedicatedBootstrapTests` exercises two clients with different factions and
+personal money/loadout, full baseline transfer, delayed acknowledgements, wrong
+map acknowledgement rejection, profile rejection, reconnect and attempted stale
+profile rollback. This portable test uses synthetic baseline bytes. It does not
+prove native world loading or native equipment readiness. The standalone
+executable, verified disk-backed bootstrap and character checkpoints, native
+worker integration and production menu path still require implementation.
+
 ## Remaining integration and acceptance
 
 1. Extract the coordinator loop and disk-backed world state into a standalone
