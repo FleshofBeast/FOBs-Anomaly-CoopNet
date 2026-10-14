@@ -184,3 +184,19 @@ The latest user direction prioritizes complete shared-world behavior over earlie
 prescribed architecture details. Bootstrap acceptance remains one prerequisite;
 the full NPC/anomaly/combat/quest, separate-map, lifetime/handoff and ongoing
 persistence requirements remain unfinished.
+
+### Native script ownership audit
+
+The native path already loads NPC script binders. Although `CGameObject` skips
+binders for `world_replica_object`, that predicate deliberately returns false
+in native co-op mode. A proposed deferred-script retention change was tested,
+found to be unreachable for native NPCs and removed before commit. The failed
+diagnostic fixture is `_build/dedicated-native-3fa91f66b03c4507ae25de57b31d40dc`;
+its dedicated world/character loading still completed, but no retention marker
+appeared. Do not treat this fixture as a passing simulation acceptance.
+
+The actual decision gate is `schedule_world_replica`: it bypasses shared NPC
+scheduled AI/script decisions until `native_online_cell_owned` is true. Native
+frame playback and binder load are already preserved. The next integration must
+grant and restore authenticated simulation leases, then route owner publications
+through the dedicated server, rather than adding a second binder load path.
