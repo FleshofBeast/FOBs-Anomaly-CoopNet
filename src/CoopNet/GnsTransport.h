@@ -15,13 +15,14 @@ class GnsRuntime {
     std::deque<HSteamNetConnection> pending_;
     std::set<HSteamNetConnection> connections_;
     std::string last_failure_;
+    std::size_t incoming_limit_ = 3;
     static void changed(SteamNetConnectionStatusChangedCallback_t* event) {
         if (active_) active_->on_changed(*event);
     }
     void on_changed(const SteamNetConnectionStatusChangedCallback_t& event) {
         if (event.m_info.m_eState == k_ESteamNetworkingConnectionState_Connecting &&
             event.m_info.m_hListenSocket == listener_ && listener_ != k_HSteamListenSocket_Invalid) {
-            if (connections_.size() >= 3 || api_->AcceptConnection(event.m_hConn) != k_EResultOK) {
+            if (connections_.size() >= incoming_limit_ || api_->AcceptConnection(event.m_hConn) != k_EResultOK) {
                 api_->CloseConnection(event.m_hConn, 0, "CoopNet capacity", false); return;
             }
             connections_.insert(event.m_hConn); pending_.push_back(event.m_hConn);
@@ -36,7 +37,8 @@ class GnsRuntime {
         }
     }
 public:
-    GnsRuntime() {
+    explicit GnsRuntime(std::size_t incoming_limit = 3) : incoming_limit_(incoming_limit) {
+        if (!incoming_limit || incoming_limit > 4) throw std::invalid_argument("Invalid incoming connection limit");
         if (active_) throw std::logic_error("CoopNet GNS runtime already exists");
         SteamDatagramErrMsg error;
         if (!GameNetworkingSockets_Init(nullptr, error)) throw std::runtime_error(error);

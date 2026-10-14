@@ -41,6 +41,36 @@ and generation, malformed mode markers, and switching back to listen hosting.
 This is protocol/session groundwork, not a playable dedicated server. The engine
 runtime and menu do not invoke it yet. No installed client is changed.
 
+### Separate-process transport acceptance
+
+`test-coopnet-dedicated-network.ps1` builds the explicit DedicatedNetwork fixture
+and launches one server process plus four client processes on localhost UDP
+27891. The incoming GNS connection limit is configurable up to four; ordinary
+listen hosting retains its three-remote-client default. Each fixture client
+uploads a distinct character profile with money, faction, weapon condition,
+ammunition and active equipped slot before becoming ready. The first reconnects
+without resubmitting its character; the server checks its retained profile and
+all clients observe the advanced connection generation. All processes exit
+normally after the server observes their disconnections.
+
+Acceptance passed in `_build/dedicated-network-acceptance.log`, with individual
+process evidence in
+`_build/coopnet-network-tests/dedicated-78b5e5d6b62143a8a50e3a714d540dbf`.
+The initial sandbox run timed out; the network-enabled rerun exposed and fixed a
+fixture assertion made before the first roster arrived. These are transport
+and profile-transfer results, not native save import, disk persistence, world
+simulation, rendered appearance, internet connectivity or performance evidence.
+
+### Native dedicated-mode constraints found in source
+
+The existing `g_dedicated_server` path cannot be assumed to retain single-player
+simulation: `CAI_Space::init`, `unload`, and patrol-path loading return early in
+`src/xrGame/ai_space.cpp`; native script binder reload/reinit is also skipped in
+`src/xrGame/GameObject.cpp`. Simply enabling that flag would omit required AI
+and script behavior. A coordinator with client simulation must retain those
+systems on workers. A fully native headless-world alternative must deliberately
+restore and verify them rather than treating a console window as proof.
+
 ## Remaining integration and acceptance
 
 1. Extract the coordinator loop and disk-backed world state into a standalone
