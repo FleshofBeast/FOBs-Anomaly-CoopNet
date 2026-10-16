@@ -1,5 +1,6 @@
 #pragma once
 #include "HostPump.h"
+#include "DedicatedSimulation.h"
 #include <memory>
 namespace coopnet {
 // Engine-independent bootstrap for a canonical world. The caller must verify
@@ -8,6 +9,7 @@ namespace coopnet {
 class DedicatedBootstrap {
     struct Loading {std::uint32_t generation=0;unsigned stage=0;InventoryView character;bool input_seen=false;std::uint32_t input_sequence=0;};
     HostPump host_;
+    std::unique_ptr<DedicatedSimulation> simulation_;
     WorldBaseline world_;
     std::shared_ptr<const std::vector<std::uint8_t>> bytes_;
     std::map<Identity,InventoryView> characters_;
@@ -21,6 +23,17 @@ public:
     DedicatedBootstrap& operator=(const DedicatedBootstrap&) = delete;
     HostPump& host() {return host_;}
     const HostPump& host() const {return host_;}
+    const DedicatedSimulation* simulation() const {return simulation_.get();}
+    void enable_experimental_simulation(std::function<void(Identity,const Frame&)> rejected={}) {
+        if(!bytes_) throw std::logic_error("Dedicated world must be started before simulation");
+        if(simulation_) throw std::logic_error("Dedicated simulation already enabled");
+        simulation_=std::make_unique<DedicatedSimulation>(host_,world_);
+        host_.set_region_sink([this,rejected](Identity sender,const Frame& frame) {
+            const bool accepted=simulation_->receive(sender,frame);
+            if(!accepted && rejected)rejected(sender,frame);
+            return accepted;
+        });
+    }
     void start(Identity session,BuildIdentity build,const WorldBaseline& world,
         std::shared_ptr<const std::vector<std::uint8_t>> bytes,std::function<Identity()> tokens,
         std::function<bool(Identity,InventoryView&)> import_checkpoint) {
@@ -84,10 +97,13 @@ public:
                         {input.pitch,input.yaw,0},input.movement,0,input.sequence};
                     if(!host_.publish_snapshot(snapshot)) throw std::runtime_error("Dedicated owner pose publication failed");
                     loading.input_seen=true;loading.input_sequence=input.sequence;
+                    if(simulation_ && !simulation_->interest(player.id,input))
+                        throw std::runtime_error("Dedicated simulation interest failed");
                 }
             }
         }
+        if(simulation_) simulation_->update();
     }
-    void stop() {host_.stop();world_={};bytes_.reset();characters_.clear();loading_.clear();tokens_={};time_us_=0;tick_=0;}
+    void stop() {host_.stop();simulation_.reset();world_={};bytes_.reset();characters_.clear();loading_.clear();tokens_={};time_us_=0;tick_=0;}
 };
 }

@@ -60,7 +60,7 @@ std::uint64_t number(const std::map<std::string,std::string>& options,const std:
 int main(int argc,char** argv) {
     try {
         std::map<std::string,std::string> options;
-        const std::set<std::string> allowed{"--data","--world","--level","--game","--mods","--port","--run-seconds","--experimental-bootstrap"};
+        const std::set<std::string> allowed{"--data","--world","--level","--game","--mods","--port","--run-seconds","--experimental-bootstrap","--experimental-simulation"};
         for(int i=1;i<argc;i+=2) {
             if(i+1>=argc || !allowed.count(argv[i]) || !options.emplace(argv[i],argv[i+1]).second)throw std::invalid_argument("Invalid or duplicate server option");
         }
@@ -91,6 +91,8 @@ int main(int argc,char** argv) {
             (options.count("--level") && number(options,"--level",0)!=archive.world.level))throw std::invalid_argument("Options conflict with canonical world metadata");
         const auto port=number(options,"--port",27888);if(!port || port>65535)throw std::invalid_argument("Invalid server port");
         const auto seconds=number(options,"--run-seconds",0);
+        const auto simulation=number(options,"--experimental-simulation",0);
+        if(simulation>1)throw std::invalid_argument("Invalid experimental simulation option");
         const auto character_directory=data/"characters";fs::create_directories(character_directory);
         GnsRuntime network(4);DedicatedBootstrap coordinator;
         auto baseline=std::make_shared<const std::vector<std::uint8_t>>(archive.bytes);
@@ -110,9 +112,10 @@ int main(int argc,char** argv) {
             std::cout<<"CHARACTER_CHECKPOINT_ACCEPTED "<<incoming.actor<<" items "<<incoming.items.size()<<'\n'<<std::flush;
             return true;
         });
+        if(simulation)coordinator.enable_experimental_simulation([](Identity player,const Frame& frame){std::cout<<"SIMULATION_REJECTED player "<<player<<" message "<<static_cast<unsigned>(frame.message)<<" sequence "<<frame.sequence<<'\n'<<std::flush;});
         if(!network.listen(static_cast<std::uint16_t>(port)))throw std::runtime_error("Server listen failed");
         SetConsoleCtrlHandler(interrupted,TRUE);
-        std::cout<<"EXPERIMENTAL_BOOTSTRAP_LISTENING port "<<port<<" level "<<archive.world.level<<" bytes "<<archive.world.size<<" scope "<<archive.world.scope<<"\nNative cell simulation and ongoing world/character checkpoint updates are not active yet.\n"<<std::flush;
+        std::cout<<"EXPERIMENTAL_BOOTSTRAP_LISTENING port "<<port<<" level "<<archive.world.level<<" bytes "<<archive.world.size<<" scope "<<archive.world.scope<<"\nExperimental simulation coordinator "<<simulation<<". Native worker integration and ongoing checkpoints remain under development.\n"<<std::flush;
         auto previous=std::chrono::steady_clock::now();const auto began=previous;
         unsigned ready=0;
         while(!stopping) {
@@ -126,6 +129,7 @@ int main(int argc,char** argv) {
             if(ready!=coordinator.host().ready_participants()) {ready=coordinator.host().ready_participants();std::cout<<"ADMITTED_CLIENTS "<<ready<<'\n'<<std::flush;}
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
+        if(const auto* cells=coordinator.simulation())std::cout<<"SIMULATION_ACCEPTED catalogues "<<cells->accepted_catalogues()<<" states "<<cells->accepted_states()<<'\n';
         coordinator.stop();std::cout<<"SERVER_STOPPED\n";return 0;
     } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
 }
