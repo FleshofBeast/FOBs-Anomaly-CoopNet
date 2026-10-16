@@ -2,6 +2,11 @@
 #include "xrSheduler.h"
 #include "xr_object.h"
 #include "../CoopNet/EngineWorldBridge.h"
+#include <algorithm>
+#include <map>
+#include <string>
+#include <typeinfo>
+#include <vector>
 
 //#define DEBUG_SCHEDULER
 
@@ -9,6 +14,55 @@ float psShedulerCurrent = 10.f;
 float psShedulerTarget = 10.f;
 const float psShedulerReaction = 0.1f;
 BOOL g_bSheduleInProgress = FALSE;
+
+// CoopNet diagnostic: per-class scheduler cost. Active only with
+// -coop_performance_probe; ordinary play never takes these branches.
+namespace {
+struct CoopSchedulerCost {u64 ticks=0;u32 calls=0;};
+std::map<std::string,CoopSchedulerCost> coop_scheduler_classes,coop_scheduler_objects;
+u32 coop_scheduler_window=0;
+bool coop_scheduler_profiling() {
+	static int enabled=-1;
+	if(enabled<0) enabled=strstr(GetCommandLineA(),"-coop_performance_probe") ? 1 : 0;
+	return enabled==1;
+}
+struct CoopSchedulerSample {
+	std::string type,name;u64 began=0;
+	explicit CoopSchedulerSample(ISheduled* object) {
+		if(!coop_scheduler_profiling() || !object) return;
+		// Read identity before the update: an object may unregister or die inside it.
+		type=typeid(*object).name();name=object->shedule_Name().c_str() ? object->shedule_Name().c_str() : "?";
+		began=CPU::QPC();
+	}
+	void finish(bool bypassed) {
+		if(!began) return;
+		const u64 ticks=CPU::QPC()-began;
+		auto& kind=coop_scheduler_classes[type+(bypassed ? " [replica]" : " [native]")];kind.ticks+=ticks;++kind.calls;
+		if(!bypassed) {auto& object=coop_scheduler_objects[name];object.ticks+=ticks;++object.calls;}
+	}
+};
+// Template parameter avoids naming CSheduler's private Item type.
+template<class Queue> void coop_scheduler_report(const Queue& items,u32 now) {
+	if(!coop_scheduler_profiling()) return;
+	if(!coop_scheduler_window) {coop_scheduler_window=now;return;}
+	const u32 span=now-coop_scheduler_window;
+	if(span<10000) return;
+	u32 due=0;for(const auto& item:items) if(item.dwTimeForExecute<now) ++due;
+	const double seconds=span/1000.0,to_ms=1000.0/double(CPU::qpc_freq);
+	Msg("* CoopNet scheduler profile: window %.1fs queued %u overdue %u budget_ms %.2f",seconds,unsigned(items.size()),due,psShedulerCurrent);
+	auto report=[&](const char* label,std::map<std::string,CoopSchedulerCost>& costs,unsigned limit) {
+		std::vector<std::pair<std::string,CoopSchedulerCost>> sorted(costs.begin(),costs.end());
+		std::sort(sorted.begin(),sorted.end(),[](const auto& a,const auto& b){return a.second.ticks>b.second.ticks;});
+		for(unsigned i=0;i<sorted.size() && i<limit;++i)
+			Msg("* CoopNet scheduler %s: %s calls_per_s %.1f ms_per_s %.2f mean_ms %.3f",label,sorted[i].first.c_str(),
+				sorted[i].second.calls/seconds,sorted[i].second.ticks*to_ms/seconds,sorted[i].second.ticks*to_ms/(std::max)(1u,sorted[i].second.calls));
+		costs.clear();
+	};
+	report("class",coop_scheduler_classes,10);
+	report("object",coop_scheduler_objects,10);
+	coop_scheduler_window=now;
+}
+}
 
 //-------------------------------------------------------------------------------------
 void CSheduler::Initialize()
@@ -367,7 +421,10 @@ void CSheduler::ProcessStep()
 		m_current_step_obj = T.Object;
 		// try {
 		const auto elapsed=clampr(Elapsed,u32(1),u32(_max(u32(T.Object->shedule.t_max),u32(1000))));
-		if (!engine_coopnet::schedule_world_replica(T.Object,elapsed)) T.Object->shedule_Update(elapsed);
+		CoopSchedulerSample coop_sample(T.Object);
+		const bool coop_bypassed=engine_coopnet::schedule_world_replica(T.Object,elapsed);
+		if (!coop_bypassed) T.Object->shedule_Update(elapsed);
+		coop_sample.finish(coop_bypassed);
 		if (!m_current_step_obj)
 		{
 #ifdef DEBUG_SCHEDULER
@@ -478,7 +535,10 @@ void CSheduler::Update()
         VERIFY(T.Object->dbg_startframe != Device.dwFrame);
         T.Object->dbg_startframe = Device.dwFrame;
 #endif
-		if (!engine_coopnet::schedule_world_replica(T.Object,Elapsed)) T.Object->shedule_Update(Elapsed);
+		CoopSchedulerSample coop_sample(T.Object);
+		const bool coop_bypassed=engine_coopnet::schedule_world_replica(T.Object,Elapsed);
+		if (!coop_bypassed) T.Object->shedule_Update(Elapsed);
+		coop_sample.finish(coop_bypassed);
 		T.dwTimeOfLastExecute = dwTime;
 	}
 
@@ -491,6 +551,7 @@ void CSheduler::Update()
 	clamp(psShedulerTarget, 3.f, 66.f);
 	psShedulerCurrent = 0.9f * psShedulerCurrent + 0.1f * psShedulerTarget;
 	Device.Statistic->fShedulerLoad = psShedulerCurrent;
+	coop_scheduler_report(Items,Device.dwTimeGlobal);
 
 	// Finalize
 	g_bSheduleInProgress = FALSE;

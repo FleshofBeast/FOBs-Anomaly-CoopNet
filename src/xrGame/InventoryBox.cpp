@@ -60,9 +60,16 @@ void CInventoryBox::OnEvent(NET_Packet& P, u16 type)
 			u16 id;
 			P.r_u16(id);
 			CObject* itm = Level().Objects.net_Find(id);
-			VERIFY(itm);
 			xr_vector<u16>::iterator it;
 			it = std::find(m_items.begin(), m_items.end(), id);
+            // A replicated teardown/reject can arrive after this item moved or
+            // was removed. Never erase end() or detach its current owner.
+            if(engine_coopnet::world_level_is_replica() &&
+                (!itm || it==m_items.end() || itm->H_Parent()!=this)) {
+                if(it!=m_items.end()) m_items.erase(it);
+                break;
+            }
+            VERIFY(itm);
 			VERIFY(it!=m_items.end());
 			m_items.erase(it);
 

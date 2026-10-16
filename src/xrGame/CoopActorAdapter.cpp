@@ -30,6 +30,7 @@
 #include "../CoopNet/EngineActorBridge.h"
 #include "../CoopNet/EngineWorldBridge.h"
 #include "../CoopNet/WorldState.h"
+#include "../CoopNet/RegionSimulation.h"
 #include "../CoopNet/WorldPosePlayback.h"
 #include "actor_anim_defs.h"
 #include "../CoopNet/GuestSave.h"
@@ -61,6 +62,7 @@
 #include <deque>
 #include "../xrEngine/CoopNetRuntime.h"
 #include "../xrEngine/Environment.h"
+#include "../xrEngine/Stats.h"
 #include "../xrEngine/xr_IOConsole.h"
 #include "script_engine.h"
 #include "lua.hpp"
@@ -81,6 +83,9 @@
 extern string_path g_last_saved_game;
 namespace engine_coopnet {
 namespace {
+coopnet::RegionSimulation cell_simulation;
+bool native_online_cell_owned(const CGameObject* object);
+bool native_simulation_region(const CSE_ALifeDynamicObject* object,coopnet::RegionKey& key);
 std::vector<u8> personal_task_bytes;
 xr_vector<shared_str> personal_known_infos;
 xr_string personal_script_tasks;
@@ -292,6 +297,62 @@ bool faction_matches_host(const std::string& community) {
     const auto host=actor_community(g_actor->ID());
     return !community.empty() && community==host;
 }
+// Test-only (-coop_peaceful_probe): fixture players start neutral to every human
+// faction and arrive away from hostile squads. Ordinary play never takes these paths.
+bool peaceful_probe() {
+    static const bool enabled=strstr(Core.Params,"-coop_peaceful_probe")!=nullptr;
+    return enabled;
+}
+void apply_peaceful_goodwill(CActor* actor) {
+    if (!peaceful_probe() || !actor) return;
+    unsigned raised=0;
+    for (unsigned i=0;i<=CHARACTER_COMMUNITY::GetMaxIndex();++i) {
+        const auto index=static_cast<CHARACTER_COMMUNITY_INDEX>(i);
+        // Cancel only a hostile faction-table relation, leaving its sum neutral (0).
+        const int relation=RELATION_REGISTRY().GetCommunityRelation(index,actor->Community());
+        if (relation<0 && RELATION_REGISTRY().GetCommunityGoodwill(index,actor->ID())< -relation) {
+            RELATION_REGISTRY().SetCommunityGoodwill(index,actor->ID(),-relation); ++raised;
+        }
+    }
+    if (raised) Msg("* CoopNet peaceful probe: object %u neutralized %u hostile factions",actor->ID(),raised);
+}
+Fvector peaceful_arrival(const Fvector& origin,std::uint32_t level) {
+    if (!peaceful_probe() || !g_actor || !ai().get_alife()) return origin;
+    // Threats: every living mutant, plus humans whose faction table is hostile to
+    // the player (kept even though neutralized, to avoid their crossfire).
+    std::vector<Fvector> threats;
+    for (const auto& entry:ai().alife().objects().objects()) {
+        auto* monster=smart_cast<CSE_ALifeMonsterAbstract*>(entry.second);
+        if (!monster || !monster->g_Alive() || smart_cast<CSE_ALifeCreatureActor*>(entry.second) ||
+            !ai().game_graph().valid_vertex_id(monster->m_tGraphID)) continue;
+        if (static_cast<std::uint32_t>(ai().game_graph().vertex(monster->m_tGraphID)->level_id())+1!=level) continue;
+        if (auto* human=smart_cast<CSE_ALifeTraderAbstract*>(entry.second)) {
+            if (human->m_community_index<0 ||
+                CHARACTER_COMMUNITY::relation(human->m_community_index,g_actor->Community())>=0) continue;
+        }
+        threats.push_back(monster->o_Position);
+    }
+    const float safe=150.f;
+    auto clearance=[&](const Fvector& point) {
+        float nearest=flt_max; for (const auto& threat:threats) nearest=_min(nearest,point.distance_to_sqr(threat)); return nearest;
+    };
+    if (clearance(origin)>=safe*safe) return origin;
+    // Nearest sampled AI vertex with full clearance; otherwise the most isolated one.
+    Fvector nearest=origin,widest=origin; float nearest_distance=flt_max,widest_clearance=-1.f;
+    const auto vertices=ai().level_graph().header().vertex_count();
+    for (u32 vertex=0;vertex<vertices;vertex+=_max(1u,vertices/8192)) {
+        const Fvector candidate=ai().level_graph().vertex_position(vertex);
+        const float clear=clearance(candidate);
+        if (clear>=safe*safe) {
+            const float distance=candidate.distance_to_sqr(origin);
+            if (distance<nearest_distance) {nearest_distance=distance; nearest=candidate;}
+        } else if (clear>widest_clearance) {widest_clearance=clear; widest=candidate;}
+    }
+    const Fvector chosen=nearest_distance<flt_max ? nearest : widest;
+    Msg("* CoopNet peaceful probe arrival: threats %u moved %.1f m clearance %.1f m",static_cast<unsigned>(threats.size()),
+        chosen.distance_to(origin),threats.empty() ? 0.f : _sqrt(clearance(chosen)));
+    return chosen;
+}
 bool apply_actor_community(CActor* actor,const std::string& community,bool reset=false) {
     if (!actor || community.empty()) return false;
     const auto* data=CHARACTER_COMMUNITY::GetById(community.c_str(),true);
@@ -304,6 +365,7 @@ bool apply_actor_community(CActor* actor,const std::string& community,bool reset
     for (unsigned i=0;i<=CHARACTER_COMMUNITY::GetMaxIndex();++i)
         RELATION_REGISTRY().SetCommunityGoodwill(static_cast<CHARACTER_COMMUNITY_INDEX>(i),actor->ID(),0);
     Msg("* CoopNet player faction applied: object %u community %s",actor->ID(),community.c_str());
+    apply_peaceful_goodwill(actor);
     return true;
 }
 namespace { u16 mutant_probe_stationary=0xffff,mutant_probe_attacker=0xffff; }
@@ -362,6 +424,7 @@ bool apply_player_progress(CActor* actor,const coopnet::PlayerProgress& p) {
         for(const auto& relation:p.story) if(relation.first==entry.second) {goodwill=relation.second;break;}
         RELATION_REGISTRY().SetGoodwill(entry.first,actor->ID(),goodwill);
     }
+    apply_peaceful_goodwill(actor); // Restored progress must not reintroduce hostility.
     return true;
 }
 void update_guest_ui(double elapsed) {
@@ -638,6 +701,11 @@ bool shared_hit_probe_fired=false;
 u16 native_combat_fixture_weapon=0xffff;
 std::uint64_t world_incarnation=0, replica_frames=0, replica_schedules=0;
 std::map<const CSE_Abstract*,std::uint64_t> alife_lifetimes;
+std::map<const CSE_Abstract*,coopnet::RegionKey> native_region_roots;
+std::uint64_t native_region_player=0;
+std::uint32_t native_region_level=0;
+double native_region_width=coopnet::default_region_width;
+bool native_region_coordinator=false;
 unsigned world_replica_count=0;
 bool collect_world_objects=false;
 std::deque<coopnet::RadioRecord> radio_history;
@@ -889,9 +957,9 @@ void display_party_status(unsigned stage,unsigned present,unsigned required,std:
     CurrentGameUI()->m_pMessagesWnd->AddLogMessage(shared_str(text));
 }
 void alife_lifetime_started(const CSE_Abstract* object) {
-    if(object) alife_lifetimes[object]=++world_incarnation;
+    if(object) {alife_lifetimes[object]=++world_incarnation;native_region_roots.erase(object);}
 }
-void alife_lifetime_ended(const CSE_Abstract* object) {alife_lifetimes.erase(object);}
+void alife_lifetime_ended(const CSE_Abstract* object) {alife_lifetimes.erase(object);native_region_roots.erase(object);}
 #include "CoopNetNativeCheckpoint.inc"
 #include "CoopNetNativeRestore.inc"
 bool capture_bootstrap_offline_checkpoint(double width,coopnet::NativeRegionCheckpoint& output) {
@@ -984,14 +1052,22 @@ bool exercise_offline_checkpoint_probe(double width) {
 }
 bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& objects) {
     LocalActorPose local;
-    if (!capture_local_actor(local) || world_level_is_replica()) return false;
+    if (!capture_local_actor(local) || (world_level_is_replica() && !has_owned_cell_simulation())) return false;
     level=local.level; objects.clear();
     for (const auto& record:world_objects) {
         auto* object=const_cast<CGameObject*>(record.first);
         auto* entity=smart_cast<CEntityAlive*>(object);
         auto* zone=smart_cast<CCustomZone*>(object);
         if ((!entity && !zone) || object->cast_actor() || object->getDestroy() || private_quest_followers.count(object->ID())) continue;
+        if(world_level_is_replica() && !native_online_cell_owned(object)) continue;
         NativeWorldPose pose; pose.object=object->ID(); pose.incarnation=record.second.incarnation;
+        if(world_level_is_replica()) {
+            const auto* source=ai().alife().objects().object(object->ID(),true);
+            if(!native_simulation_region(source,pose.simulation_region))continue;
+            const auto lifetime=alife_lifetimes.find(source);
+            if(lifetime==alife_lifetimes.end())return false;
+            pose.incarnation=lifetime->second;
+        }
         pose.section=object->cNameSect().c_str();pose.name=object->cName().c_str(); if (object->cNameVisual().size()) pose.visual=object->cNameVisual().c_str();
         for (unsigned axis=0;axis<3;++axis) pose.position[axis]=object->Position()[axis];
         object->XFORM().getHPB(pose.rotation[0],pose.rotation[1],pose.rotation[2]);
@@ -1055,6 +1131,7 @@ bool intercept_world_hit(CGameObject* target,const SHit& hit) {
         if(!attacker || !attacker->is_coopnet_guest()) return true;
     }
     if (!guest_native_world() || !target || target->cast_actor()) return false;
+    if(native_online_cell_owned(target)) return false;
     const auto binding=world_objects.find(target);
     if (private_quest_followers.count(target->ID()) || binding==world_objects.end() || !binding->second.replica || !smart_cast<CEntityAlive*>(target)) return false;
     if (hit.who!=g_actor || !g_actor || !g_actor->g_Alive() || !binding->second.authority ||
@@ -1083,6 +1160,7 @@ bool intercept_player_hit(CGameObject* target,const SHit& hit) {
     if(!native_world_requested() || applying_player_hit || !target || !target->cast_actor()) return false;
     auto* actor=target->cast_actor();
     if(guest_native_world()) {
+        if(native_online_cell_owned(smart_cast<CGameObject*>(hit.who)))return false;
         const auto found=world_objects.find(smart_cast<CGameObject*>(hit.who));
         // Shared attackers hit on the authority; local anomalies and private NPCs stay native.
         return target==g_actor && found!=world_objects.end() && found->second.replica &&
@@ -1279,6 +1357,7 @@ bool apply_world_object(std::uint64_t session_id,std::uint64_t anchor,std::uint6
         if (!binding->authority && coopnet::world_anchor(session_id,matched->ID())!=anchor)
             Msg("* CoopNet anomaly baseline binding: section %s native %u host anchor %llu",matched->cNameSect().c_str(),matched->ID(),anchor);
         binding->authority=incarnation; binding->anchor=anchor;
+        if(native_online_cell_owned(matched)) return true;
         matched->CoopApplyState(zone_state,zone_time); return true;
     }
     for (auto& record:world_objects) {
@@ -1291,6 +1370,7 @@ bool apply_world_object(std::uint64_t session_id,std::uint64_t anchor,std::uint6
         if (guest_native_world() && entity->AlreadyDie() && health>0) return true;
         if (record.second.dead && health>0) return false;
         record.second.authority=incarnation; record.second.anchor=anchor;
+        if(native_online_cell_owned(object)) return true;
         if (!physics.elements.empty()) {record.second.physics=physics;record.second.physics_pending=true;}
         object->setVisible(TRUE); object->setEnabled(TRUE);
         if (guest_native_world()) {
@@ -1412,6 +1492,7 @@ void update_npc_catalogue() {
     for (const auto& record:world_objects) {
         auto* object=const_cast<CGameObject*>(record.first);
         if (private_quest_followers.count(object->ID()) || !record.second.replica || object->cast_actor() || (!smart_cast<CEntityAlive*>(object) && !smart_cast<CCustomZone*>(object)) || object->getDestroy()) continue;
+        if(native_online_cell_owned(object)) continue;
         const auto anchor=record.second.anchor ? record.second.anchor : coopnet::world_anchor(npc_session,object->ID());
         const auto expected=retained.find(anchor);
         if (expected==retained.end() || (record.second.authority && expected->second->pose.incarnation!=record.second.authority) ||
@@ -1476,7 +1557,10 @@ void update_npc_catalogue() {
                 if (auto* visual=abstract->visual()) visual->visual_name=n.visual.c_str();
             }
             abstract->m_bALifeControl=false; if (creature) creature->set_health(1.f);
-            abstract->o_Angle.set(n.pose.rotation[0],n.pose.rotation[1],n.pose.rotation[2]);
+            // Wire poses use HPB; native spawn packets use XYZ (pitch, heading,
+            // bank). Swapping these axes recreates rotated zones forever because
+            // their spawned geometry never matches the retained host catalogue.
+            abstract->o_Angle.set(n.pose.rotation[1],n.pose.rotation[0],n.pose.rotation[2]);
             NET_Packet packet; abstract->Spawn_Write(packet,TRUE); u16 type; packet.r_begin(type);
             auto* created=Level().Server->Process_spawn(packet,Level().Server->GetServerClient()->ID,FALSE,nullptr,true); F_entity_Destroy(abstract);
             if (created && guest_native_world()) {
@@ -1493,6 +1577,10 @@ void update_npc_catalogue() {
         }
         // Catalogue supplies the initial pose and reliable life/death state; later poses remain sequenced.
         auto found=world_objects.find(object);
+        if(native_online_cell_owned(object)) {
+            if(found!=world_objects.end()) {found->second.anchor=n.pose.anchor;found->second.authority=n.pose.incarnation;}
+            continue;
+        }
         if(n.pose.zone_state!=255) {
             apply_world_object(npc_session,n.pose.anchor,n.pose.incarnation,n.pose.position.data(),n.pose.rotation.data(),0,{},n.pose.zone_state,n.pose.zone_time);
         } else if (found!=world_objects.end() && !found->second.authority) {
@@ -2152,6 +2240,69 @@ void exercise_shared_world_probe(double elapsed,unsigned& phase,double& wait,std
         phase=3; Msg("* CoopNet shared probe: host corpse removed and info withdrawn");
     }
 }
+bool relocate_fixture_map_actor(CSE_Abstract* source) {
+    if(!strstr(Core.Params,"-coop_engine_fixture")) return true;
+    const auto* option=strstr(Core.Params,"-coop_fixture_map=");
+    if(!option) return true;
+    auto* actor=smart_cast<CSE_ALifeCreatureActor*>(source);
+    if(!actor || !source->s_flags.is(M_SPAWN_OBJECT_ASPLAYER)) return true;
+    option+=strlen("-coop_fixture_map=");
+    std::string name;while(*option && *option!=' ' && name.size()<96) name.push_back(*option++);
+    for(const auto& entry:ai().game_graph().header().levels()) if(name==entry.second.name().c_str()) {
+        for(u32 graph=0;graph<ai().game_graph().header().vertex_count();++graph) {
+            const auto* vertex=ai().game_graph().vertex(graph);
+            if(vertex->level_id()!=entry.first) continue;
+            actor->m_tGraphID=static_cast<GameGraph::_GRAPH_ID>(graph);
+            actor->m_tNodeID=vertex->level_vertex_id();actor->o_Position=vertex->level_point();
+            actor->o_Angle.set(0,0,0);actor->o_torso.yaw=actor->o_torso.pitch=actor->o_torso.roll=0;
+            Msg("* CoopNet fixture map selected: %s level %u graph %u node %u",name.c_str(),unsigned(entry.first)+1,graph,actor->m_tNodeID);
+            return true;
+        }
+    }
+    Msg("! CoopNet fixture map unavailable: %s",name.c_str());return false;
+}
+bool native_gameplay_frame_ready() {
+    return g_pGameLevel && Level().bReady && g_actor && !Device.dwPrecacheFrame && !Device.Paused();
+}
+void configure_cell_simulation(std::uint64_t player,std::uint32_t level,double width,bool coordinator) {
+    if(!player || player!=native_region_player || level!=native_region_level || width!=native_region_width || coordinator!=native_region_coordinator)
+        native_region_roots.clear();
+    native_region_player=player;native_region_level=level;native_region_width=width;native_region_coordinator=coordinator;
+    if(!player) {cell_simulation.clear();return;}
+    cell_simulation.configure(player,level,width,coordinator);
+}
+bool observe_cell_lease(const coopnet::RegionLease& lease) {return cell_simulation.observe(lease);}
+bool confirm_cell_native_restore(const coopnet::RegionKey& key,std::uint64_t epoch,std::uint32_t revision) {
+    return cell_simulation.native_restored({key,epoch,revision});
+}
+bool has_owned_cell_simulation() {return cell_simulation.has_owned();}
+bool native_alife_authorized(const CSE_Abstract* source) {
+    const auto* object=smart_cast<const CSE_ALifeDynamicObject*>(source);
+    if(!object) return !world_level_is_replica();
+    if(smart_cast<const CSE_ALifeCreatureActor*>(source) || private_quest_followers.count(source->ID)) return true;
+    if(!cell_simulation.configured()) return !world_level_is_replica();
+    coopnet::RegionKey root;
+    if(!native_simulation_region(object,root))return false;
+    // Movement does not transfer a planner to another process. A canonical
+    // native checkpoint is required before changing the lifetime's home cell.
+    return cell_simulation.permits(root.level,{static_cast<float>((root.x+.5)*native_region_width),0,
+        static_cast<float>((root.z+.5)*native_region_width)});
+}
+namespace {
+bool native_simulation_region(const CSE_ALifeDynamicObject* object,coopnet::RegionKey& key) {
+    if(!object || !ai().game_graph().valid_vertex_id(object->m_tGraphID))return false;
+    const auto found=native_region_roots.find(object);
+    if(found!=native_region_roots.end()){key=found->second;return true;}
+    key=coopnet::region_at(static_cast<std::uint32_t>(ai().game_graph().vertex(object->m_tGraphID)->level_id())+1,
+        {object->o_Position.x,object->o_Position.y,object->o_Position.z},native_region_width);
+    native_region_roots[object]=key;return true;
+}
+bool native_online_cell_owned(const CGameObject* object) {
+    if(!cell_simulation.has_owned() || !object || !ai().get_alife()) return false;
+    const auto* source=ai().alife().objects().object(object->ID(),true);
+    return source && native_alife_authorized(source);
+}
+}
 bool world_level_is_replica() {
     if (replica_world_save.empty() || !g_pGameLevel || !Level().Server) return false;
     const auto& options=Level().Server->GetConnectOptions();
@@ -2214,6 +2365,7 @@ bool update_world_replica(CObject* base) {
     if (guest_native_world()) {
         auto* object=smart_cast<CGameObject*>(base);
         const auto found=world_objects.find(object);
+        if(native_online_cell_owned(object)) return false;
         if (object && !private_quest_followers.count(object->ID()) && found!=world_objects.end() &&
             found->second.replica && found->second.playback.ready() && !object->getDestroy()) {
             if (found->second.dead && !found->second.physics.elements.empty()) {apply_body_physics(object,found->second);return false;}
@@ -2258,11 +2410,19 @@ bool update_world_replica(CObject* base) {
     ++replica_frames; return true;
 }
 bool schedule_world_replica(ISheduled* scheduled,std::uint32_t elapsed) {
-    if (!world_replica_count) return false;
     auto* object=smart_cast<CGameObject*>(scheduled);
     if (!object) return false;
+    if(!world_level_is_replica() && cell_simulation.configured() && ai().get_alife() &&
+        smart_cast<CEntityAlive*>(object) && !object->cast_actor() && !private_quest_followers.count(object->ID())) {
+        const auto* source=ai().alife().objects().object(object->ID(),true);
+        if(source && !native_alife_authorized(source)) {
+            object->CObject::shedule_Update(elapsed);return true;
+        }
+    }
+    if (!world_replica_count) return false;
     if (guest_native_world()) {
         const auto binding=world_objects.find(object);
+        if (native_online_cell_owned(object)) return false;
         if (private_quest_followers.count(object->ID()) || binding==world_objects.end() || !binding->second.replica ||
             !smart_cast<CEntityAlive*>(object) || object->cast_actor()) return false;
         // Native frame updates provide local playback. Scheduled AI decisions
@@ -2275,6 +2435,7 @@ bool schedule_world_replica(ISheduled* scheduled,std::uint32_t elapsed) {
 void finalize_world_replica(CObject* base) {
     if(!guest_native_world()) return;
     auto* object=smart_cast<CGameObject*>(base);const auto found=world_objects.find(object);
+    if(native_online_cell_owned(object)) return;
     if(!object || object->getDestroy() || private_quest_followers.count(object->ID()) || found==world_objects.end() || !found->second.replica || !found->second.playback.ready()) return;
     if(found->second.dead && !found->second.physics.elements.empty()) {apply_body_physics(object,found->second);return;}
     std::array<float,3> point{},angles{};found->second.playback.sample(Device.dwTimeGlobal,point,angles);
@@ -2285,6 +2446,8 @@ void finalize_world_replica(CObject* base) {
     if(object->Visual()) if(auto* skeleton=object->Visual()->dcast_PKinematics()) skeleton->CalculateBones(TRUE);
 }
 void world_level_stopped() {
+    cell_simulation.clear();
+    native_region_roots.clear();native_region_player=0;native_region_level=0;
     personal_loot_dirty.clear();personal_loot_restores.clear();
     player_hits.clear();
     private_quest_followers.clear();
@@ -3218,7 +3381,8 @@ void update_local_inventory_view() {
         if (!npc || binding.first->getDestroy() || const_cast<CGameObject*>(binding.first)->cast_actor()) continue;
         const auto personal=RELATION_REGISTRY().GetGoodwill(binding.first->ID(),g_actor->ID());
         const auto attitude=RELATION_REGISTRY().GetAttitude(npc,static_cast<CInventoryOwner*>(g_actor));
-        RELATION_REGISTRY().SetGoodwill(binding.first->ID(),g_actor->ID(),relation.second-(attitude-personal));
+        const int wanted=peaceful_probe() ? _max(relation.second,0) : relation.second;
+        RELATION_REGISTRY().SetGoodwill(binding.first->ID(),g_actor->ID(),wanted-(attitude-personal));
         if (relation.second==-2000 && attitude!=relation.second)
             Msg("* CoopNet NPC disposition received: anchor %llu attitude %d",relation.first,
                 RELATION_REGISTRY().GetAttitude(npc,static_cast<CInventoryOwner*>(g_actor)));
@@ -3783,6 +3947,7 @@ bool place_local_actor(std::uint32_t level,const float* position,const float* ve
     for (unsigned axis=0;axis<3;++axis)
         if (!std::isfinite(position[axis]) || !std::isfinite(velocity[axis]) || std::abs(position[axis])>1000000) return false;
     Fvector target,speed; target.set(position[0],position[1],position[2]); speed.set(velocity[0],velocity[1],velocity[2]);
+    target=peaceful_arrival(target,level);
     const auto node=ai().level_graph().vertex(g_actor->ai_location().level_vertex_id(),target);
     if (!ai().level_graph().valid_vertex_id(node)) return false;
     g_actor->coopnet_place(target,speed);

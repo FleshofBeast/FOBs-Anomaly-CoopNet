@@ -200,3 +200,54 @@ scheduled AI/script decisions until `native_online_cell_owned` is true. Native
 frame playback and binder load are already preserved. The next integration must
 grant and restore authenticated simulation leases, then route owner publications
 through the dedicated server, rather than adding a second binder load path.
+
+### Experimental cell coordinator integration
+
+`--experimental-simulation 1` enables initial 3x3 cell delegation after canonical
+world and character loading. Native clients acknowledge the loaded seed, then
+only execute shared NPC scheduling in cells whose Active grant matches that
+acknowledgement. Typed region catalogues and owner world states pass through
+coordinator ownership, epoch and entity-lifetime checks. The coordinator uses
+its own outgoing state sequence; worker sequence spaces cannot rewind observers.
+Reliable catalogues are aggregated only after all newly granted cells report,
+avoiding a partial snapshot deleting entities in another owner's cells.
+
+Portable tests cover load barriers, observer acknowledgement rejection,
+catalogue aggregation, premature/non-owner/duplicate state rejection, observer
+relay, departing-cell revocation and refusal to activate a reassigned cell from
+the obsolete seed. Native build and gameplay acceptance remain separate gates.
+Use `test-coopnet-dedicated-bootstrap.ps1 -Simulation` for copied native clients,
+rendered frames, frame-time and process memory/CPU evidence. This is initial
+delegation only: fresh native checkpoint handoff, independent-map integration,
+canonical global simulation, combat routing and ongoing persistence remain open.
+
+The first native delegation run (`_build/dedicated-native-1a08794e23ab4400beb6fdb80a2b1619`)
+accepted 13 catalogues and 281 state packets, but disconnected when walking NPCs
+were remapped into different cells. Native roots now remain fixed for the ALife
+registry lifetime and are cleared on destruction, world load and connection loss.
+The next run (`_build/dedicated-native-18c0a24bdb2f453586839332d384b080`)
+accepted 21 catalogues and 1,695 state packets without that disconnect. It still
+FAILED acceptance: the owner measured 7.700 FPS / 236.401 ms p95, while the observer
+measured 58.890 FPS / 19.785 ms p95. Both rendered first-person Cordon frames,
+closed cleanly and preserved original saves. These are diagnostic runs, not
+playability or visual parity approval. A client checkpoint polling bug was then
+found: the host tick stays zero on clients, making its modulo condition capture
+personal state every frame. A wall-time interval replaces that condition, with
+additional native frame and publishing cost measurements pending verification.
+
+### Peaceful test environment (2026-10-16)
+
+Earlier `-Simulation` runs downed a player in a bandit raid on Rookie Village.
+Reputation was not the cause: bandits are -2000 toward `actor_stalker` in
+`communities_relations`, and reputation adds at most +500, so the attitude stays
+below the -999 enemy threshold. `new-coopnet-fresh-save.ps1` generates a stock
+Loner new game (`coopnet-fresh-stalker`) in a disposable client copy. With
+`-Peaceful`, `test-coopnet-dedicated-bootstrap.ps1` passes `-coop_peaceful_probe`:
+community goodwill cancels each hostile faction-table relation (sum neutral), host
+disposition sync cannot push below neutral, and arrival moves to the nearest
+sampled AI vertex at least 150 m from living mutants and faction-hostile humans.
+It fails if either player is downed. Normal play never takes these paths.
+`_build/dedicated-native-dc74394153d4462aa42d047d92fadf39` passed: 23 factions
+neutralized, both clients placed 179 m from the original spawn (150.4 m clearance),
+no player downed, 59.0 / 55.7 FPS. Combat synchronization still needs the
+non-peaceful fixtures.

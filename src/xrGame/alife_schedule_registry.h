@@ -12,6 +12,7 @@
 #include "xrServer_Objects_ALife.h"
 #include "ai_debug.h"
 #include "profiler.h"
+#include "../CoopNet/EngineWorldBridge.h"
 
 class CALifeScheduleRegistry : public CSafeMapIterator<
 		ALife::_OBJECT_ID, CSE_ALifeSchedulable, std::less<ALife::_OBJECT_ID>, false>
@@ -30,6 +31,7 @@ private:
 
 		IC bool operator()(_iterator& i, u64 cycle_count, bool) const
 		{
+			if (!engine_coopnet::native_alife_authorized(smart_cast<CSE_Abstract*>((*i).second))) return false;
 			if ((*i).second->m_schedule_counter == cycle_count)
 				return (false);
 

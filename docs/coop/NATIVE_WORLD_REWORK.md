@@ -480,3 +480,59 @@ cost, separate-map hosting cost, or 100-player scalability. The host should reta
 compact canonical state for foreign cells rather than loading their geometry and
 renderable entities. Native host bookkeeping and global persistence still require
 memory; packet routing alone is not the full coordinator responsibility.
+
+## Cross-map quest entity authority requirement (2026-10-12)
+
+ALife retains one canonical entity registry across all maps, including unloaded
+maps. Personal quest ownership does not make the associated physical NPC or
+entity private. A quest-triggered spawn must be committed once by the global
+coordinator with its canonical identity, lifetime and destination map/cell. If
+another player already owns that cell, publish the new entity to that owner so
+it materializes through the native spawn path without requiring the quest holder
+or host player to visit. If no client owns the cell, retain it in offline ALife
+and include it in the next ownership bootstrap. Death, removal, movement and
+handoff must preserve the same identity and prevent duplicate spawns.
+
+The existing private quest follower exclusions require an audit against this
+rule; personal quest journals/rewards may remain personal, but shared physical
+quest actors cannot be omitted from other players' world catalogues solely
+because of quest ownership. This routing is a required integration, not an
+implemented or verified capability. Acceptance must put the quest holder and
+cell owner on different maps, trigger a native quest spawn, verify exactly one
+physical entity at the destination, then exercise reconnect and ownership
+handoff without duplication or quest-state loss.
+
+## Next session: authoritative headless server feasibility (2026-10-12)
+
+User selected this as the next goal before taking a break. Prototype a dedicated,
+headless native world simulator with every player, including the hosting player,
+connecting as a guest. First prove native AI, scripts, anomalies and physics can
+run on two different maps simultaneously without rendering; measure CPU and
+memory and verify cross-map quest-created entities. A hidden rendered client or
+stock offline ALife alone does not satisfy this milestone. Decide whether to
+proceed with centralized simulation from that evidence, rather than assuming
+removing rendering removes the engine's loaded-map restrictions. Preserve the
+current delegated-cell work until feasibility is established. Continue using
+development commits, not full releases.
+
+Paused for the user's break. Latest Garbage native acceptance still fails on the
+guest (_build/cell-garbage-persistent-acceptance.log); no claim of full parity or
+successful cross-map simulation. Current source changes remain uncommitted.
+
+## Pause checkpoint (user-requested break)
+
+Goal paused at the user's request; resume dedicated native simulation authority
+integration next session. Latest pushed commit: dbc29d6e (verified native script
+and scheduler audit). Native NPC binders already load normally; the proposed
+retention experiment was removed, not shipped. Actual next work: authenticated
+server-issued simulation ownership, native scheduled AI/script execution and
+owner world publications, followed by gameplay and cross-map verification.
+Full-world synchronization remains unfinished. Prior standalone bootstrap and
+restart acceptance passed; installed clients remain unchanged. Existing cell and
+multi-map work remains uncommitted and must be preserved.
+
+A source-restoration DX11 build was launched before pausing. Poll authoritative
+exec session 95014 on resume if available, or inspect its terminal status and
+_build/dedicated-scheduler-authority-native-build.log before starting another
+build. Do not infer completion merely from the log's existence. No native game
+fixture is running from the last completed experiment.

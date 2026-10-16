@@ -52,6 +52,7 @@ bool prepare_party_probe(std::uint16_t& exit,float* origin);
 bool position_party_probe(std::uint16_t actor,std::uint16_t exit,const float* origin,bool at_exit);
 void display_party_status(unsigned stage,unsigned present,unsigned required,std::uint32_t destination);
 struct NativeWorldPose {
+    coopnet::RegionKey simulation_region;
     std::uint16_t object=0xffff;
     std::uint64_t incarnation=0;
     float position[3]{},rotation[3]{},health=0;
@@ -110,6 +111,16 @@ bool capture_bootstrap_offline_checkpoint(double width,coopnet::NativeRegionChec
 bool apply_world_object(std::uint64_t session,std::uint64_t anchor,std::uint64_t incarnation,
     const float* position,const float* rotation,float health,const std::vector<coopnet::WorldAnimation>& animations={},
     std::uint8_t zone_state=255,std::uint32_t zone_time=0,std::uint64_t killer=0,bool killer_player=false,const coopnet::WorldPhysics& physics={});
+// Owner-thread cell execution state. Native restore and host activation are
+// separate barriers; prefetched foreign maps never become execution owners.
+bool prepare_native_acceptance_container();
+bool relocate_fixture_map_actor(CSE_Abstract* source);
+bool native_gameplay_frame_ready();
+void configure_cell_simulation(std::uint64_t player,std::uint32_t level,double width,bool coordinator);
+bool observe_cell_lease(const coopnet::RegionLease& lease);
+bool confirm_cell_native_restore(const coopnet::RegionKey& key,std::uint64_t epoch,std::uint32_t revision);
+bool has_owned_cell_simulation();
+bool native_alife_authorized(const CSE_Abstract* object);
 bool world_level_is_replica();
 bool capture_death_camera(float* position,float* rotation);
 void orbit_death_camera(float yaw,float pitch);

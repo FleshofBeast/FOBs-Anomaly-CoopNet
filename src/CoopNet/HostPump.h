@@ -397,10 +397,10 @@ public:
         }
         shared_frames_[index]=frames; shared_revision_[index]=revision; return true;
     }
-    bool publish_world_state(const WorldState& state) {
+    bool publish_world_state(const WorldState& state,Identity excluded_player=0) {
         if (session_.mode()!=Mode::Host || !valid_world_state(state)) return false;
         const Frame frame{Message::WorldState,Channel::AI,Delivery::UnreliableSequenced,state.tick,encode_world_state(state)};
-        for (auto& peer:peers_) if (peer.ready && peer.baseline_received && !peer.assigned && peer.level==state.level) {
+        for (auto& peer:peers_) if (peer.player!=excluded_player && peer.ready && peer.baseline_received && !peer.assigned && peer.level==state.level) {
             const auto result=peer.transport->send(frame);
             if (result!=SendResult::Sent && result!=SendResult::Backpressure) peer.transport->close();
         }

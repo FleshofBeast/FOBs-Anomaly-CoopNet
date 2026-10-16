@@ -92,7 +92,7 @@ public:
             // Worker epochs have independent sequence spaces. Observers receive
             // one coordinator sequence so future handoffs cannot rewind playback.
             state.world.tick=++state_sequence_;
-            ++accepted_states_;return host_.publish_world_state(state.world);
+            ++accepted_states_;return host_.publish_world_state(state.world,sender);
         }
         return false;
     }

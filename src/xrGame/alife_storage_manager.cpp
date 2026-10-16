@@ -141,6 +141,10 @@ void CALifeStorageManager::load(void* buffer, const u32& buffer_size, LPCSTR fil
 	spawns().load(source, file_name);
 	graph().on_load();
 	objects().load(source);
+    // Disposable fixture only: select the actual native map before registration
+    // establishes its level registry. Installed saves are never rewritten here.
+    for(const auto& entry:objects().objects())
+        R_ASSERT2(engine_coopnet::relocate_fixture_map_actor(entry.second),"Requested native fixture map unavailable");
 
 	VERIFY(can_register_objects());
 	can_register_objects(false);

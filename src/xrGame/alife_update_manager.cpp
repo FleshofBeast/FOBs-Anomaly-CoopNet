@@ -23,6 +23,7 @@
 #include "profiler.h"
 #include "mt_config.h"
 #include "../CoopNet/EngineWorldBridge.h"
+#include "../xrEngine/CoopNetRuntime.h"
 
 using namespace ALife;
 #ifdef	ENGINE_LUA_ALIFE_UPDAGE_MANAGER_CALLBACKS
@@ -44,6 +45,7 @@ public:
 
 	IC bool operator()(CALifeLevelRegistry::_iterator& i, u64 cycle_count, bool) const
 	{
+		if (!engine_coopnet::native_alife_authorized((*i).second)) return false;
 		if ((*i).second->m_switch_counter == cycle_count)
 			return (false);
 
@@ -113,7 +115,7 @@ void CALifeUpdateManager::update_scheduled(bool init_ef)
 
 void CALifeUpdateManager::update()
 {
-	if (engine_coopnet::world_level_is_replica()) return;
+	if (engine_coopnet::world_level_is_replica() && !engine_coopnet::has_owned_cell_simulation()) return;
 	update_switch();
 	update_scheduled(false);
 }
@@ -121,12 +123,12 @@ void CALifeUpdateManager::update()
 void CALifeUpdateManager::shedule_Update(u32 dt)
 {
 	ISheduled::shedule_Update(dt);
-	if (engine_coopnet::world_level_is_replica()) return;
+	if (engine_coopnet::world_level_is_replica() && !engine_coopnet::has_owned_cell_simulation()) return;
 
 	if (!initialized())
 		return;
 
-	if (!m_first_time && g_mt_config.test(mtALife))
+	if (!m_first_time && g_mt_config.test(mtALife) && !engine_coopnet::shared_world_active() && !engine_coopnet::world_level_is_replica())
 	{
 		Device.seqParallel.push_back(
 			fastdelegate::FastDelegate0<>(

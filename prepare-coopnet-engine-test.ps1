@@ -1,4 +1,4 @@
-param([switch]$Launch, [switch]$LoadFixture, [switch]$ReplicaProbe, [switch]$MovementProbe, [switch]$ManualControls, [switch]$GameplayProbe, [switch]$WorldProbe, [switch]$PartyProbe, [switch]$WeaponProbe, [switch]$InventoryProbe, [switch]$WorldLootProbe, [switch]$SettingsProbe, [switch]$RespawnProbe, [switch]$SharedWorldProbe, [switch]$ContainerProbe, [switch]$ContainerRecoveryProbe, [switch]$DialogueProbe, [switch]$NameplateProbe, [switch]$FactionProbe, [switch]$MutantProbe, [switch]$StarterProbe, [switch]$FreshQuestProbe, [switch]$NativeWorldProbe, [switch]$NativeDefaultProbe, [switch]$NativeAcceptanceProbe, [switch]$NativeVisualProbe, [switch]$NaturalCombatProbe, [switch]$LiveCombatProbe, [switch]$SharedHitProbe, [string]$TestDirectory)
+param([switch]$Launch, [switch]$LoadFixture, [switch]$ReplicaProbe, [switch]$MovementProbe, [switch]$ManualControls, [switch]$GameplayProbe, [switch]$WorldProbe, [switch]$PartyProbe, [switch]$WeaponProbe, [switch]$InventoryProbe, [switch]$WorldLootProbe, [switch]$SettingsProbe, [switch]$RespawnProbe, [switch]$SharedWorldProbe, [switch]$ContainerProbe, [switch]$ContainerRecoveryProbe, [switch]$DialogueProbe, [switch]$NameplateProbe, [switch]$FactionProbe, [switch]$MutantProbe, [switch]$StarterProbe, [switch]$FreshQuestProbe, [switch]$NativeWorldProbe, [switch]$NativeDefaultProbe, [switch]$NativeAcceptanceProbe, [switch]$NativeVisualProbe, [switch]$NaturalCombatProbe, [switch]$LiveCombatProbe, [switch]$SharedHitProbe, [string]$TestDirectory, [string]$FixtureSave='player - autosave',[string]$FixtureMap,[switch]$PerformanceProbe)
 $ErrorActionPreference = 'Stop'
 if ($LiveCombatProbe) { $LoadFixture=$true; $ReplicaProbe=$true; $NativeWorldProbe=$true; $NativeDefaultProbe=$true; $NaturalCombatProbe=$true; $NativeVisualProbe=$true }
 if ($PartyProbe) { $WorldProbe=$true }
@@ -71,7 +71,7 @@ foreach ($role in @('host', 'guest')) {
     $startup = if ($role -eq 'host') { 'coop_host 27889 1 1 1' } else { 'coop_join 127.0.0.1:27889 2 1 1' }
     # Hidden probe processes must render without desktop focus; only these copied configs change.
     @($userTemplate) + @('rs_screenmode windowed','vid_mode 1280x720',
-        'snd_volume_eff 0','snd_volume_music 0','r__framelimit 30','g_always_active on','keypress_on_start off',$startup,'coop_status') |
+        'snd_volume_eff 0','snd_volume_music 0',$(if($PerformanceProbe){'r__framelimit 60'}else{'r__framelimit 30'}),'g_always_active on','keypress_on_start off',$startup,'coop_status') |
         Set-Content "$data\user.ltx" -Encoding ascii
     if ($ReplicaProbe) { Add-Content "$data\user.ltx" 'coop_replica_probe' -Encoding ascii }
     if ($LiveCombatProbe) { Add-Content "$data\user.ltx" 'coop_world_probe' -Encoding ascii }
@@ -92,12 +92,12 @@ foreach ($role in @('host', 'guest')) {
     if ($StarterProbe -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_starter_probe' -Encoding ascii }
     if ($PartyProbe -and $role -eq 'host') { Add-Content "$data\user.ltx" 'coop_party_probe' -Encoding ascii }
     if ($LoadFixture -and ($role -eq 'host' -or $ReplicaProbe) -and !($WorldProbe -and $role -eq 'guest' -and (!$NativeWorldProbe -or $FreshQuestProbe))) {
-        $fixture = Join-Path $client 'appdata\savedgames\player - autosave.scop'
+        $fixture = Join-Path $client "appdata\savedgames\$FixtureSave.scop"
         if (!(Test-Path $fixture)) { throw 'The disposable gameplay test fixture source save is missing.' }
         $saves = Join-Path $data 'savedgames'
         New-Item $saves -ItemType Directory -Force | Out-Null
         foreach ($extension in @('scop','scoc','dds')) {
-            $source = Join-Path $client "appdata\savedgames\player - autosave.$extension"
+            $source = Join-Path $client "appdata\savedgames\$FixtureSave.$extension"
             if (Test-Path $source) { Copy-Item -LiteralPath $source -Destination "$saves\coopnet-fixture.$extension" -Force }
         }
         Add-Content "$data\user.ltx" 'start server(coopnet-fixture/single/alife/load) client(localhost)' -Encoding ascii
@@ -108,6 +108,8 @@ if ($Launch) {
     foreach ($role in @('host', 'guest')) {
         $root = Join-Path $testRoot $role
         $probeArguments=@('-silent_error_mode','-noprefetch','-coop_engine_fixture')
+        if($FixtureMap){if($FixtureMap -notmatch '^l[0-9a-z_]+$'){throw 'Invalid native fixture map name'};$probeArguments+=('-coop_fixture_map='+$FixtureMap)}
+        if($PerformanceProbe){$probeArguments+='-coop_performance_probe'}
         if ($NativeWorldProbe -and !$NativeDefaultProbe) { $probeArguments+='-coop_native_world' }
         if (!$NativeWorldProbe) { $probeArguments+='-coop_passive_world' }
         if ($SharedHitProbe) { $probeArguments+='-coop_shared_hit_probe' }

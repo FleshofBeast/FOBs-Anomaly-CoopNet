@@ -25,6 +25,7 @@ void coopnet_log(const char* format, ...) {
 #include "../CoopNet/CharacterSave.h"
 #include "../CoopNet/JoinProfile.h"
 #include "../CoopNet/LootRetries.h"
+#include "../CoopNet/RegionCatalogue.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -114,6 +115,19 @@ struct Session {
     coopnet::ClientPump client;
     std::unique_ptr<coopnet::RegionAuthority> region_authority;
     std::set<coopnet::Identity> region_participants;
+    std::map<coopnet::RegionKey,coopnet::RegionLease> worker_leases;
+    std::map<coopnet::RegionKey,coopnet::Identity> worker_acknowledged;
+    struct WorkerCatalogue {
+        coopnet::Identity epoch=0;
+        std::uint32_t revision=0,offset=0,sequence=0;
+        std::vector<std::uint8_t> signature,pending_signature,payload;
+    };
+    std::map<coopnet::RegionKey,WorkerCatalogue> worker_catalogues;
+    double worker_catalogue_wait=1;
+    double worker_publish_wait=0;
+    double personal_checkpoint_wait=0;
+    double worker_publish_ms=0,worker_publish_max_ms=0;
+    unsigned worker_publish_frames=0;
     std::vector<std::uint8_t> offline_bootstrap;
     coopnet::RegionKey offline_bootstrap_key;
     std::map<coopnet::Identity,std::uint32_t> offline_bootstrap_offsets;
@@ -121,6 +135,8 @@ struct Session {
     bool offline_bootstrap_restored=false;
     bool offline_bootstrap_ack_pending=false;
     std::set<coopnet::Identity> offline_bootstrap_acknowledged;
+    struct Performance {double warmup=0;bool previous_ready=false;std::vector<double> milliseconds;};
+    std::map<std::uint32_t,Performance> performance;
     coopnet::Mode mode = coopnet::Mode::Offline;
     coopnet::ClientState last_client_state = coopnet::ClientState::Offline;
     bool saved_resume_attempt=false;
@@ -472,6 +488,7 @@ void publish_world(Session& current) {
                 processing.distance,processing.online,processing.offline);
         }
         auto& regions=*current.region_authority;
+        configure_cell_simulation(current.host.session().players().front().id,region_local.level,regions.width(),true);
         std::set<coopnet::Identity> present;
         const auto host_player=current.host.session().players().front().id;
         if(!regions.update_neighborhood(host_player,region_local.level,{region_local.position[0],region_local.position[1],region_local.position[2]}))
@@ -486,6 +503,7 @@ void publish_world(Session& current) {
         }
         for(auto player:current.region_participants) if(!present.count(player)) regions.disconnect(player);
         current.region_participants=std::move(present);
+        for(const auto& lease:regions.leases()) observe_cell_lease(lease);
         // Prove the native cross-process bootstrap before enabling delegated
         // online simulation. This prefetch grants no simulation lease.
         if(current.offline_checkpoint_probe_complete && strstr(GetCommandLineA(),"-coop_engine_fixture") &&
@@ -569,6 +587,92 @@ void publish_world(Session& current) {
     if (!objects.empty() && ++current.world_updates==1)
         Msg("* CoopNet host NPC states: objects %u level %u",static_cast<unsigned>(objects.size()),level);
 }
+void publish_dedicated_cells(Session& current,double elapsed) {
+    if(current.worker_leases.empty() || !native_character_ready() || !current.client.baseline_acknowledged() ||
+        !world_baseline_loaded(current.world_save.c_str()))return;
+    struct PublishTiming {
+        Session& session;std::chrono::steady_clock::time_point began=std::chrono::steady_clock::now();
+        ~PublishTiming(){const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-began).count();session.worker_publish_ms+=ms;session.worker_publish_max_ms=(std::max)(session.worker_publish_max_ms,ms);++session.worker_publish_frames;}
+    } timing{current};
+    LocalActorPose local;NativeProcessingRange range;
+    if(!capture_local_actor(local) || !capture_processing_range(range))return;
+    // Until the processing width is negotiated, mismatched grids must stay fenced.
+    if(range.distance!=coopnet::default_region_width)return;
+    const auto player=current.client.session().welcome().player;
+    for(const auto& entry:current.worker_leases) {
+        const auto& lease=entry.second;
+        if(lease.owner!=player || lease.key.level!=local.level || lease.stage!=coopnet::RegionStage::Restoring ||
+            lease.checkpoint!=1 || current.worker_acknowledged[lease.key]==lease.epoch)continue;
+        if(confirm_cell_native_restore(lease.key,lease.epoch,1) && current.client.send_region_frame({
+            coopnet::Message::RegionAck,coopnet::Channel::World,coopnet::Delivery::ReliableOrdered,0,
+            coopnet::encode_region_ack({lease.key,lease.epoch,1})})==coopnet::SendResult::Sent) {
+            current.worker_acknowledged[lease.key]=lease.epoch;
+            Msg("* CoopNet native seed cell acknowledged: level %u cell %d %d epoch %llu",lease.key.level,lease.key.x,lease.key.z,lease.epoch);
+        }
+    }
+    current.worker_publish_wait+=elapsed;
+    if(current.worker_publish_wait<.04)return;
+    elapsed=current.worker_publish_wait;current.worker_publish_wait=0;
+    std::uint32_t level=0;std::vector<NativeWorldPose> objects;
+    if(!capture_world_objects(level,objects))return;
+    std::map<coopnet::RegionKey,std::vector<coopnet::NPCRecord>> catalogues;
+    std::map<coopnet::RegionKey,std::vector<coopnet::WorldPose>> states;
+    for(const auto& entry:current.worker_leases)if(entry.second.owner==player && entry.second.stage==coopnet::RegionStage::Active &&
+        current.worker_acknowledged[entry.first]==entry.second.epoch)catalogues[entry.first];
+    for(const auto& native:objects) {
+        if(!catalogues.count(native.simulation_region))continue;
+        coopnet::NPCRecord record;record.section=native.section;record.visual=native.visual;record.name=native.name;record.shapes=native.shapes;
+        auto& pose=record.pose;pose.anchor=coopnet::world_anchor(current.client.session().welcome().session,native.object);
+        pose.incarnation=native.incarnation;pose.health=native.health;pose.zone_state=native.zone_state;pose.zone_time=native.zone_time;
+        for(unsigned axis=0;axis<3;++axis){pose.position[axis]=native.position[axis];pose.rotation[axis]=native.rotation[axis];}
+        if(native.killer!=0xffff) {
+            pose.killer=native.killer==local.object ? player : coopnet::world_anchor(current.client.session().welcome().session,native.killer);
+            pose.killer_player=native.killer==local.object;
+        }
+        catalogues[native.simulation_region].push_back(record);
+        pose.animations=native.animations;pose.physics=native.physics;
+        states[native.simulation_region].push_back(pose);
+    }
+    current.worker_catalogue_wait+=elapsed;
+    const bool refresh=current.worker_catalogue_wait>=1;
+    if(refresh)current.worker_catalogue_wait=0;
+    for(const auto& entry:catalogues) {
+        const auto& lease=current.worker_leases.at(entry.first);auto& outgoing=current.worker_catalogues[entry.first];
+        if(outgoing.epoch!=lease.epoch){outgoing={};outgoing.epoch=lease.epoch;}
+        if(outgoing.payload.empty() && (refresh || !outgoing.revision)) {
+            auto signature=entry.second;
+            for(auto& record:signature) {
+                if(record.pose.zone_state==255){record.pose.position={};record.pose.rotation={};record.pose.health=record.pose.health>0 ? 1.f : 0.f;}
+                else {record.pose.zone_state=0;record.pose.zone_time=0;}
+            }
+            const auto encoded=coopnet::encode_npcs(signature);
+            if(!outgoing.revision || encoded!=outgoing.signature) {
+                outgoing.payload=coopnet::encode_region_catalogue(entry.second);outgoing.pending_signature=encoded;outgoing.offset=0;++outgoing.revision;
+            }
+        }
+        unsigned chunks=0;
+        while(!outgoing.payload.empty() && chunks++<8) {
+            const auto total=static_cast<std::uint32_t>(outgoing.payload.size());
+            const auto end=(std::min)(total,outgoing.offset+coopnet::region_chunk_size);
+            coopnet::RegionChunk chunk{entry.first,lease.epoch,outgoing.revision,total,outgoing.offset,{outgoing.payload.begin()+outgoing.offset,outgoing.payload.begin()+end}};
+            if(current.client.send_region_frame({coopnet::Message::RegionChunk,coopnet::Channel::World,coopnet::Delivery::ReliableOrdered,0,coopnet::encode_region_chunk(chunk)})!=coopnet::SendResult::Sent)break;
+            outgoing.offset=end;
+            if(end==total){
+                outgoing.signature=std::move(outgoing.pending_signature);outgoing.payload.clear();
+                Msg("* CoopNet native worker catalogue sent: level %u cell %d %d objects %u revision %u",level,entry.first.x,entry.first.z,static_cast<unsigned>(entry.second.size()),outgoing.revision);
+            }
+        }
+        if(!outgoing.revision || !outgoing.payload.empty())continue;
+        coopnet::WorldState state{level,0,{}};std::size_t wire=30;
+        auto send=[&]{if(!state.objects.empty()){state.tick=++outgoing.sequence;current.client.send_region_frame({coopnet::Message::RegionState,coopnet::Channel::AI,coopnet::Delivery::UnreliableSequenced,state.tick,coopnet::encode_region_state({entry.first,lease.epoch,state})});}};
+        for(const auto& pose:states[entry.first]) {
+            const auto size=coopnet::world_pose_wire_size(pose);
+            if(!state.objects.empty() && (state.objects.size()==128 || wire+size>coopnet::max_payload-16)) {send();state.objects.clear();wire=30;}
+            state.objects.push_back(pose);wire+=size;
+        }
+        send();
+    }
+}
 void publish_shared_world(Session& current,double elapsed) {
     if (!current.world_probe || current.party_loading) return;
     current.shared_wait+=elapsed; if (current.shared_wait<1) return; current.shared_wait=0;
@@ -617,7 +721,7 @@ void publish_shared_world(Session& current,double elapsed) {
     }
 }
 void send_world_baselines(Session& current) {
-    if (!current.world_probe) return;
+    if (!current.world_probe || !prepare_native_acceptance_container()) return;
     LocalActorPose local;
     if (!capture_local_actor(local)) return;
     if (current.party_loading && local.level!=current.party_status.destination) return;
@@ -1384,6 +1488,16 @@ void stop() {
         for (const auto& entry : session->guests)
             Msg("* CoopNet guest simulation removed: inputs %u distance %.3f",entry.second.inputs,entry.second.distance);
         if (session->world_probe) Msg("* CoopNet NPC state updates: %u",session->world_updates);
+        if(session->worker_publish_frames)Msg("* CoopNet worker publishing cost: frames %u mean_ms %.3f max_ms %.3f",session->worker_publish_frames,
+            session->worker_publish_ms/session->worker_publish_frames,session->worker_publish_max_ms);
+        for(auto& entry:session->performance) {
+            auto& frames=entry.second.milliseconds;if(frames.empty()) continue;
+            std::sort(frames.begin(),frames.end());double sum=0;for(double frame:frames) sum+=frame;
+            const double fps=1000*frames.size()/sum,p95=frames[static_cast<std::size_t>((frames.size()-1)*.95)];
+            Msg("* CoopNet gameplay performance: level %u frames %u fps %.3f p95_ms %.3f max_ms %.3f result %s",
+                entry.first,static_cast<unsigned>(frames.size()),fps,p95,frames.back(),
+                frames.size()>=300 && fps>=30 && p95<50 ? "PASS" : "FAIL");
+        }
         clear_host_world_rules();
         end_world_replication(); clear_guest_actors(); clear_remote_actors(); session.reset(); set_native_world_policy(false); Msg("* CoopNet session stopped");
     }
@@ -1449,6 +1563,20 @@ void update(double) {
         const double elapsed = session->clock_started ?
             std::chrono::duration<double>(now - session->last_update).count() : 0;
         session->last_update = now; session->clock_started = true;
+        if(strstr(GetCommandLineA(),"-coop_engine_fixture") && strstr(GetCommandLineA(),"-coop_performance_probe")) {
+            LocalActorPose perf_local;
+            const bool ready=native_gameplay_frame_ready() && capture_local_actor(perf_local) &&
+                (session->mode==coopnet::Mode::Host ? session->host.ready_participants()>=2 :
+                    session->client.baseline_acknowledged() && native_character_ready());
+            if(ready) {
+                auto& perf=session->performance[perf_local.level];
+                if(perf.previous_ready && elapsed>0) {
+                    perf.warmup+=elapsed;
+                    if(perf.warmup>=30 && perf.milliseconds.size()<180000) perf.milliseconds.push_back(elapsed*1000);
+                }
+                perf.previous_ready=true;
+            } else for(auto& entry:session->performance) entry.second.previous_ready=false;
+        }
         session->runtime.poll();
         if (session->mode == coopnet::Mode::Host) {
             for (unsigned i = 0; i < 3; ++i) {
@@ -1518,7 +1646,15 @@ void update(double) {
             }
         } else {
             session->loot_retries.advance(elapsed);
+            NativeProcessingRange cell_range;LocalActorPose cell_local;
+            if(capture_processing_range(cell_range) && capture_local_actor(cell_local) && session->client.session().welcome().player)
+                configure_cell_simulation(session->client.session().welcome().player,cell_local.level,cell_range.distance,false);
             session->client.update(elapsed);
+            if(session->client.session().state()!=coopnet::ClientState::Connected && !session->worker_leases.empty()) {
+                configure_cell_simulation(0,0,coopnet::default_region_width,false);
+                session->worker_leases.clear();session->worker_acknowledged.clear();session->worker_catalogues.clear();
+                Msg("* CoopNet native worker execution fenced after connection loss");
+            }
             if(session->offline_bootstrap_ack_pending && session->client.send_region_frame({
                 coopnet::Message::RegionAck,coopnet::Channel::World,coopnet::Delivery::ReliableOrdered,0,
                 coopnet::encode_region_ack({session->offline_bootstrap_key,1,1})})==coopnet::SendResult::Sent) {
@@ -1632,12 +1768,15 @@ void update(double) {
             }
             update_world_items();
             update_npc_catalogue();
+            publish_dedicated_cells(*session,elapsed);
             update_container_catalogue();
             set_personal_world_scope(session->client.baseline().scope);
             update_personal_loot();
             exercise_native_acceptance_probe(elapsed);
             update_guest_ui(elapsed);
-            if (guest_native_world() && native_character_ready() && session->tick%25==0) {
+            session->personal_checkpoint_wait+=elapsed;
+            if (guest_native_world() && native_character_ready() && session->personal_checkpoint_wait>=1) {
+                session->personal_checkpoint_wait=0;
                 LocalActorPose local;coopnet::InventoryView character;ActorConditionState condition;
                 std::vector<std::uint8_t> personal;
                 if (capture_local_actor(local) && capture_owned_character(character) && capture_actor_condition(local.object,condition) && capture_personal_state(personal)) {
@@ -2075,8 +2214,19 @@ void command(const char* name, const char* arguments) {
                 }
             });
             next->client.set_region_sink([owner](const coopnet::Frame& frame) {
+                if(owner->client.roster() && owner->client.roster()->current().dedicated) {
+                    coopnet::RegionLease lease;
+                    if(frame.sequence || frame.message!=coopnet::Message::RegionLease || !coopnet::decode_region_lease(frame.payload,lease))return false;
+                    if(!observe_cell_lease(lease))return false;
+                    owner->worker_leases[lease.key]=lease;return true;
+                }
                 if(!strstr(GetCommandLineA(),"-coop_engine_fixture") || !strstr(GetCommandLineA(),"-coop_native_acceptance_probe") ||
-                    frame.message!=coopnet::Message::RegionChunk || frame.sequence || owner->offline_bootstrap_restored) return false;
+                    frame.sequence) return false;
+                if(frame.message==coopnet::Message::RegionLease) {
+                    coopnet::RegionLease lease;
+                    return coopnet::decode_region_lease(frame.payload,lease) && observe_cell_lease(lease);
+                }
+                if(frame.message!=coopnet::Message::RegionChunk || owner->offline_bootstrap_restored) return false;
                 coopnet::RegionChunk chunk;
                 if(!coopnet::decode_region_chunk(frame.payload,chunk) || chunk.epoch!=1 || chunk.revision!=1 ||
                     !owner->offline_bootstrap_assembly.accept(chunk)) return false;

@@ -1,4 +1,30 @@
 // Disposable fixture stimulus only. Normal gameplay never enters this path.
+bool prepare_native_acceptance_container() {
+    if(!strstr(Core.Params,"-coop_engine_fixture") || !strstr(Core.Params,"-coop_fixture_map=") ||
+        !strstr(Core.Params,"-coop_native_acceptance_probe")) return true;
+    if(!g_pGameLevel || !Level().bReady || !g_actor || world_level_is_replica()) return false;
+    for(const auto& binding:world_objects) {
+        auto* box=smart_cast<CInventoryBox*>(const_cast<CGameObject*>(binding.first));
+        if(box && !box->getDestroy() && box->m_items.empty()) {
+            const auto* persistent=ai().alife().objects().object(box->ID(),true);
+            if(persistent && persistent->can_save() && !persistent->redundant()) return true;
+        }
+    }
+    static u16 fixture_box=0xffff;
+    if(fixture_box!=0xffff) return false; // Await its queued native spawn before capturing baseline.
+    auto* abstract=Level().spawn_item("inventory_box",g_actor->Position(),g_actor->ai_location().level_vertex_id(),0xffff,true);
+    abstract->m_bALifeControl=false;abstract->set_name_replace("coopnet_personal_loot_fixture");
+    NET_Packet packet;abstract->Spawn_Write(packet,TRUE);u16 type;packet.r_begin(type);
+    auto* created=Level().Server->Process_spawn(packet,Level().Server->GetServerClient()->ID,FALSE,nullptr,true);
+    F_entity_Destroy(abstract);
+    auto* persistent=smart_cast<CSE_ALifeDynamicObject*>(created);
+    if(!persistent) throw std::runtime_error("Host native acceptance container spawn failed");
+    persistent->m_bOnline=true;persistent->m_bALifeControl=true;
+    const_cast<CALifeSimulator&>(ai().alife()).create(persistent);
+    fixture_box=created->ID;
+    Msg("* CoopNet native acceptance container seeded before baseline: object %u",fixture_box);
+    return false;
+}
 void exercise_native_acceptance_probe(double elapsed) {
     if(!native_world_requested() || !g_pGameLevel || !Level().bReady || !g_actor) return;
     // Capture real rendered frames for human review; these are diagnostic evidence,
@@ -11,6 +37,10 @@ void exercise_native_acceptance_probe(double elapsed) {
             Render->Screenshot();
             Msg("* CoopNet visual capture: frame %u role %s actor %.3f %.3f %.3f",captures,
                 world_level_is_replica() ? "guest" : "host",g_actor->Position().x,g_actor->Position().y,g_actor->Position().z);
+            if(strstr(Core.Params,"-coop_performance_probe") && Device.Statistic)
+                Msg("* CoopNet native frame costs: owner %u scheduler_ms %.3f ai_ms %.3f update_ms %.3f physics_ms %.3f render_ms %.3f",
+                    has_owned_cell_simulation(),Device.Statistic->Sheduler.result,Device.Statistic->AI_Think.result,
+                    Device.Statistic->UpdateClient.result,Device.Statistic->Physics.result,Device.Statistic->RenderTOTAL.result);
             for(const auto& binding:world_objects) {
                 auto* target=smart_cast<CEntityAlive*>(const_cast<CGameObject*>(binding.first));
                 if(!target || xr_strcmp(target->cName().c_str(),"coopnet_natural_target")) continue;
@@ -37,8 +67,10 @@ void exercise_native_acceptance_probe(double elapsed) {
                     if(zone && !zone->getDestroy() && zone->GetHitType()==ALife::eHitTypeShock) {source=zone;break;}
                 }
                 if(!source) throw std::runtime_error("Dynamic anomaly fixture source missing");
-                Fvector position; position.set(-269.5f,-9.5f,-244.3f);
-                auto* abstract=Level().spawn_item(source->cNameSect().c_str(),position,3975,0xffff,true);
+                Fvector position=g_actor->Position();position.z+=6.f;
+                const auto node=ai().level_graph().vertex(g_actor->ai_location().level_vertex_id(),position);
+                if(!ai().level_graph().valid_vertex_id(node)) throw std::runtime_error("Dynamic anomaly fixture navigation missing");
+                auto* abstract=Level().spawn_item(source->cNameSect().c_str(),position,node,0xffff,true);
                 auto* zone=smart_cast<CSE_ALifeCustomZone*>(abstract);
                 if(!zone) {F_entity_Destroy(abstract);throw std::runtime_error("Dynamic anomaly fixture server class missing");}
                 zone->set_name_replace("coopnet_dynamic_anomaly"); zone->m_bALifeControl=false;zone->m_owner_id=u32(-1);
@@ -119,14 +151,22 @@ void exercise_native_acceptance_probe(double elapsed) {
     if(stage==1) {
         auto* source=smart_cast<CInventoryBox*>(Level().Objects.net_Find(source_id));
         auto* ammo=Level().Objects.net_Find(ammo_id);auto* weapon=Level().Objects.net_Find(weapon_id);
-        if(!source || !ammo || !weapon || ammo->H_Parent()!=source || weapon->H_Parent()!=source) return;
+        if(!source || !ammo || !weapon || ammo->H_Parent()!=source || weapon->H_Parent()!=source) {
+            if(wait>25) throw std::runtime_error("Native personal loot fixture attachment timed out");return;
+        }
         NET_Packet reject;CGameObject::u_EventGen(reject,GE_OWNERSHIP_REJECT,source_id);reject.w_u16(ammo_id);CGameObject::u_EventSend(reject);
         NET_Packet take;CGameObject::u_EventGen(take,GE_OWNERSHIP_TAKE,g_actor->ID());take.w_u16(ammo_id);CGameObject::u_EventSend(take);
         stage=2;return;
     }
     if(stage==2) {
         auto* source=smart_cast<CInventoryBox*>(Level().Objects.net_Find(source_id));auto* ammo=Level().Objects.net_Find(ammo_id);
-        if(!source || !ammo || ammo->H_Parent()!=g_actor || source->m_items.size()!=1) return;
+        if(!source || !ammo || ammo->H_Parent()!=g_actor || source->m_items.size()!=1) {
+            if(wait>25) {
+                Msg("! CoopNet loot transfer diagnostic: source %u items %u ammo %u parent %u actor %u",source_id,source ? unsigned(source->m_items.size()) : 0,ammo_id,ammo && ammo->H_Parent() ? ammo->H_Parent()->ID() : 0xffff,g_actor->ID());
+                throw std::runtime_error("Native personal loot fixture transfer timed out");
+            }
+            return;
+        }
         std::vector<std::uint8_t> saved;if(!capture_personal_state(saved)) return;
         PersonalState state;if(!decode_personal_state(saved,state)) throw std::runtime_error("Personal loot fixture capture decode failed");
         const auto snapshot=std::find_if(state.loot.begin(),state.loot.end(),[&](const PersonalLoot& s){return s.name==source->cName().c_str() && s.scope==personal_world_scope;});

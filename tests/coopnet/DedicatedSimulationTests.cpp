@@ -10,7 +10,7 @@ int main() {
     server.start(900,{1,1},{800,3,12,{},700},bytes,[&]{return ++token;},[](Identity,InventoryView&){return true;});
     server.enable_experimental_simulation();
     ClientPump owner,observer;std::map<RegionKey,RegionLease> owned,observed;
-    std::vector<NPCRecord> catalogue;unsigned rendered=0;
+    std::vector<NPCRecord> catalogue;unsigned rendered=0,owner_echoes=0;
     auto connect=[&](ClientPump& client,Identity character,Connection connection) {
         auto link=MemoryTransport::pair();require(server.host().attach(connection,std::move(link.second)));
         client.start(std::move(link.first),character,{1,1});
@@ -22,6 +22,7 @@ int main() {
     observer.set_region_sink([&](const Frame& frame){RegionLease lease;if(!decode_region_lease(frame.payload,lease))return false;observed[lease.key]=lease;return true;});
     observer.set_shared_world_sink([&](SharedKind kind,std::uint32_t level,const std::vector<std::uint8_t>& data){if(kind==SharedKind::NPC){require(level==3);require(decode_npcs(data,catalogue));}});
     observer.set_world_sink([&](const WorldState& state){require(state.objects.size()==1 && state.objects[0].anchor==999);++rendered;});
+    owner.set_world_sink([&](const WorldState&){++owner_echoes;});
     connect(owner,200,100);connect(observer,201,101);
     auto pump=[&](unsigned count=10){for(unsigned i=0;i<count;++i){owner.update(.01);observer.update(.01);server.update(.01);}};
     pump(30);require(owned.empty());
@@ -56,6 +57,7 @@ int main() {
     state(owner,3,8);require(!server.simulation()->accepted_states());
     require(owner.session().state()==ClientState::Connected); // reordered/unbound state is dropped
     state(owner,3);require(server.simulation()->accepted_states()==1 && rendered==1);
+    require(!owner_echoes);
     // A native planner walking across a boundary remains attached to its home
     // cell until an explicit checkpoint handoff changes simulation ownership.
     npc.pose.position[0]=800;publish(owned.at(key),{npc},2);pump();

@@ -1,4 +1,4 @@
-param([switch]$FreshGuest,[switch]$Acceptance,[switch]$NaturalCombat,[string]$TestDirectory,[switch]$Resume,[switch]$NativeDefault,[switch]$VisualCapture,[switch]$MemoryCapture)
+param([switch]$FreshGuest,[switch]$Acceptance,[switch]$NaturalCombat,[string]$TestDirectory,[switch]$Resume,[switch]$NativeDefault,[switch]$VisualCapture,[switch]$MemoryCapture,[string]$FixtureMap,[switch]$PerformanceCapture)
 $ErrorActionPreference='Stop'
 $repo=$PSScriptRoot
 Set-Location $repo
@@ -9,7 +9,7 @@ $hashes=@{};Get-ChildItem $source -Filter 'player - autosave.*' -File | ForEach-
 $owned=@()
 $memorySamples=[Collections.Generic.List[object]]::new()
 try {
- $owned=@(& "$repo/prepare-coopnet-engine-test.ps1" -Launch -LoadFixture -ReplicaProbe -MovementProbe -WorldProbe -WeaponProbe -SharedWorldProbe -NativeWorldProbe -NativeDefaultProbe:$NativeDefault -NativeAcceptanceProbe:$Acceptance -NativeVisualProbe:$VisualCapture -NaturalCombatProbe:$NaturalCombat -SharedHitProbe -FreshQuestProbe:$FreshGuest -TestDirectory $root)
+ $owned=@(& "$repo/prepare-coopnet-engine-test.ps1" -Launch -LoadFixture -ReplicaProbe -MovementProbe -WorldProbe -WeaponProbe -SharedWorldProbe -NativeWorldProbe -NativeDefaultProbe:$NativeDefault -NativeAcceptanceProbe:$Acceptance -NativeVisualProbe:$VisualCapture -NaturalCombatProbe:$NaturalCombat -SharedHitProbe -FreshQuestProbe:$FreshGuest -TestDirectory $root -FixtureMap $FixtureMap -PerformanceProbe:$PerformanceCapture)
  if($owned.Count -ne 2){throw 'Expected exactly two fixture processes'}
  $watch=[Diagnostics.Stopwatch]::StartNew()
  while($watch.Elapsed.TotalSeconds -lt 150) {
@@ -20,7 +20,7 @@ try {
     $process.Refresh()
     $memorySamples.Add([pscustomobject]@{
      Seconds=[math]::Round($watch.Elapsed.TotalSeconds,3);Role=@('host','guest')[$index];ProcessId=$process.Id
-     WorkingSetBytes=$process.WorkingSet64;PrivateBytes=$process.PrivateMemorySize64
+     WorkingSetBytes=$process.WorkingSet64;PrivateBytes=$process.PrivateMemorySize64;CpuSeconds=$process.TotalProcessorTime.TotalSeconds
      PeakWorkingSetBytes=$process.PeakWorkingSet64;VirtualBytes=$process.VirtualMemorySize64
     })
    }
@@ -35,6 +35,7 @@ try {
    $steady=@($samples | Where-Object Seconds -ge 90)
    [pscustomobject]@{
     Role=$role;Samples=$samples.Count;SteadySamples=$steady.Count;SteadyStartSeconds=90
+    AverageCpuCores=if($steady.Count -gt 1){[math]::Round(($steady[-1].CpuSeconds-$steady[0].CpuSeconds)/($steady[-1].Seconds-$steady[0].Seconds),3)}else{$null}
     PeakWorkingSetGiB=[math]::Round(($samples | Measure-Object PeakWorkingSetBytes -Maximum).Maximum/1GB,3)
     PeakPrivateGiB=[math]::Round(($samples | Measure-Object PrivateBytes -Maximum).Maximum/1GB,3)
     SteadyWorkingSetGiB=if($steady.Count){[math]::Round(($steady | Measure-Object WorkingSetBytes -Average).Average/1GB,3)}else{$null}
@@ -57,7 +58,7 @@ $dogMatch=[regex]::Match($logs.guest,'CoopNet NPC spawned: section dog_weak anch
 if(!$dogMatch.Success){throw 'Shared enemy identity missing'}
 $dogAnchor=$dogMatch.Groups[1].Value
 if(!$logs.guest.Contains("CoopNet NPC death applied: anchor $dogAnchor") -or !$logs.guest.Contains("CoopNet NPC removed: anchor $dogAnchor section dog_weak")){throw 'Shared enemy death/removal did not match its spawned identity'}
-if($logs.guest -notmatch 'CoopNet NPC spawned:[^\r\n]*trader 1 visible 1'){throw 'Native trader recreation missing'}
+if((!$FixtureMap -or $FixtureMap -eq 'l01_escape') -and $logs.guest -notmatch 'CoopNet NPC spawned:[^\r\n]*trader 1 visible 1'){throw 'Cordon native trader recreation missing'}
 if($logs.guest.Contains('CoopNet quests applied:')){throw 'Personal-quest mode applied a host quest snapshot'}
 $questMarker=if($FreshGuest){'CoopNet personal quest probe: fresh guest has no inherited host tasks'}else{'CoopNet personal quest probe: guest-only task and info restored'}
 if(!$logs.guest.Contains($questMarker)){throw 'Personal task/info restoration missing'}
@@ -83,6 +84,12 @@ if ($Acceptance) {
  if($Resume -and !$logs.guest.Contains('CoopNet portable personal state queued:')){throw 'Portable personal quests were not loaded'}
  if(!(Get-ChildItem "$root/guest/appdata/savedgames" -Filter '*.coopchar')){throw 'Guest portable character was not saved'}
 }
+if($FixtureMap) {foreach($role in @('host','guest')) {if(!$logs[$role].Contains("CoopNet fixture map selected: $FixtureMap ")){throw "$role did not load requested native map"}}}
+if($PerformanceCapture) {foreach($role in @('host','guest')) {
+ $perf=[regex]::Matches($logs[$role],'CoopNet gameplay performance: level (\d+) frames (\d+) fps ([\d.]+) p95_ms ([\d.]+) max_ms ([\d.]+) result (PASS|FAIL)')
+ if(!$perf.Count){throw "$role gameplay frame measurements missing"}
+ foreach($result in $perf){Write-Output "$role $($result.Value)";if($result.Groups[6].Value -ne 'PASS'){throw "$role native frame performance failed"}}
+}}
 if($cleanupErrors.Count){throw ($cleanupErrors -join '; ')}
 $checks='native NPC frames, shared hit/death/removal, personal quest restoration'
 if($Acceptance){$checks+=', personal loot transfer/contents, electrical collision/damage, owner-side player hit, portable character save'}
