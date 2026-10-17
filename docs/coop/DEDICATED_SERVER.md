@@ -251,3 +251,54 @@ It fails if either player is downed. Normal play never takes these paths.
 neutralized, both clients placed 179 m from the original spawn (150.4 m clearance),
 no player downed, 59.0 / 55.7 FPS. Combat synchronization still needs the
 non-peaceful fixtures.
+
+### Cell ownership handoff (2026-10-16, paused)
+
+Each accepted owner catalogue is now saved as the cell's RegionAuthority
+checkpoint (revisions above the seed's 1). A departing owner's last catalogue
+completes the Quiescing barrier; on disconnect the next visitor is offered the
+newest checkpoint. The coordinator streams it to the new owner as RegionChunks
+after that owner holds the matching lease. The successor adopts the coordinator's
+home cells for the checkpointed anchors, applies the records through
+`apply_world_object`, then acknowledges that exact epoch/checkpoint. The seed (1)
+is refused for any cell that was ever Active, and catalogue revisions restart per
+owner epoch. Checkpoints carry the published NPC identity/lifetime/pose/health,
+not planner or script internals: the successor resumes native AI from those poses.
+
+Portable: `DedicatedSimulationTests` (graceful handoff, wrong/stale checkpoint
+refusal, successor catalogue and state acceptance) and `DedicatedBootstrapTests`
+pass. `test-coopnet-dedicated-bootstrap.ps1 -Simulation -Peaceful -Handoff` closes
+the seed owner halfway through and requires server handoffs, successor checkpoint
+application/acknowledgement and no `SIMULATION_REJECTED`.
+
+Native fixes found along the way: catalogue-bound stand-ins now publish their bound
+anchor (they previously published a new ID-derived identity, duplicating NPCs and
+breaking home-cell roots), ownership events flush the engine log for the harness,
+and the harness no longer hides the original failure behind cleanup errors.
+
+Latest run `_build/dedicated-native-80e7150d6f8042c292e8d0e8b21abeb2` FAILED only on
+the successor frame gate: all 9 cells handed off, 37 catalogues / 2,898 states
+accepted, no rejection, reconnect or runtime error, but 24.1 FPS / 74.7 ms p95 after
+takeover (scheduler 30-37 ms per frame). The cause is pre-existing identity
+divergence: runtime spawns get different native IDs on each client, so an observer
+holds both its own local copies and catalogue stand-ins of the owner's NPCs (story_id
+duplicate warnings appear before any handoff). The publisher now skips 376 such
+colliding local copies per catalogue, but they still run native AI once their cell is
+owned. Next: give runtime spawns one coordinator-assigned identity (or retire
+divergent local copies on observers) so a successor simulates each NPC once, then
+re-run the -Handoff acceptance. Cross-map simulation, combat routing and ongoing
+persistence remain open. All changes since c064556d are uncommitted.
+
+Resumed and fixed: the successor published its own per-client ALife lifetime
+counters as incarnations. When the coordinator's catalogue came back, every bound
+native failed the incarnation match and was re-spawned as a stand-in, doubling AI.
+Bound objects now keep publishing their shared (catalogue-bound) incarnation.
+`_build/dedicated-native-3a76aebf600742568b78d946c6f6b7fd` PASSED with
+`-Simulation -Peaceful -Handoff`: owner closed at 63 s, all 9 cells handed off,
+36 catalogues / 3,218 states, no rejection or reconnect; successor 53.1 FPS /
+26.3 ms p95 after takeover (scheduler 11-15 ms per frame, previously 30-37 ms).
+Remaining observer issue (pre-existing, before any handoff): the observer still
+spawns ~298 catalogue stand-ins and keeps colliding local copies (296 skipped per
+successor catalogue; 7 story_id duplicate warnings). Next: bind observers' native
+objects to catalogue anchors instead of replacing them, then retire the collision
+skip. Cross-map simulation, combat routing and ongoing persistence remain open.

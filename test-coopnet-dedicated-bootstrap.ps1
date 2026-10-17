@@ -1,5 +1,6 @@
-param([ValidateRange(60,180)][int]$Seconds=100,[ValidateRange(1024,65535)][int]$Port=27893,[switch]$Simulation,[string]$FixtureSave='player - autosave',[switch]$Peaceful)
+param([ValidateRange(60,180)][int]$Seconds=100,[ValidateRange(1024,65535)][int]$Port=27893,[switch]$Simulation,[string]$FixtureSave='player - autosave',[switch]$Peaceful,[switch]$Handoff)
 $ErrorActionPreference='Stop'
+if($Handoff -and !$Simulation){throw '-Handoff requires -Simulation'}
 $root=Join-Path $PSScriptRoot ('_build/dedicated-native-'+[guid]::NewGuid().ToString('N'))
 $source=Join-Path (Split-Path $PSScriptRoot) 'Anomaly-1.5.3/appdata/savedgames'
 $seed=Join-Path $source "$FixtureSave.scop"
@@ -14,6 +15,7 @@ foreach($role in @('host','guest')) {
     @("coop_character_probe 127.0.0.1:$Port")+$lines | Set-Content -LiteralPath $config -Encoding ascii
     if($Simulation){Add-Content -LiteralPath $config -Value 'rs_stats on' -Encoding ascii}
 }
+$departed=-1;$departedRole=$null
 $data=Join-Path $root 'server-data';$owned=@();$samples=[Collections.Generic.List[object]]::new()
 try {
     $serverArguments=@('--experimental-bootstrap','1','--data',('"'+$data+'"'),'--world',('"'+$seed+'"'),'--level','3','--port',"$Port",'--run-seconds',"$($Seconds+30)")
@@ -34,13 +36,29 @@ try {
     }
     $watch=[Diagnostics.Stopwatch]::StartNew()
     while($watch.Elapsed.TotalSeconds -lt $Seconds) {
+        # Handoff: halfway through, close the client that acknowledged seed cells.
+        if($Handoff -and !$departedRole -and $watch.Elapsed.TotalSeconds -ge $Seconds/2) {
+            foreach($index in 1,2) {
+                $role=@('host','guest')[$index-1]
+                $file=Get-ChildItem "$root/$role/appdata/logs" -Filter '*.log' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+                # The running engine keeps its log open; read it with shared access.
+                $text=if($file){$stream=[IO.File]::Open($file.FullName,'Open','Read','ReadWrite');try{(New-Object IO.StreamReader($stream)).ReadToEnd()}finally{$stream.Dispose()}}
+                if($text -and $text.Contains('native seed cell acknowledged')) {
+                    $owned[$index].CloseMainWindow()|Out-Null
+                    if(!$owned[$index].WaitForExit(30000)){throw "Departing owner did not close normally: $role"}
+                    $departed=$index;$departedRole=$role;Write-Host "Handoff: closed owner $role at $([math]::Round($watch.Elapsed.TotalSeconds))s";break
+                }
+            }
+            if(!$departedRole){throw "No client acknowledged seed cells before the handoff point: $root"}
+        }
         for($i=0;$i -lt $owned.Count;$i++) {
+            if($i -eq $departed){continue}
             $process=$owned[$i];if($process.HasExited){throw "Owned fixture process exited early: $i"};$process.Refresh()
             $samples.Add([pscustomobject]@{Seconds=$watch.Elapsed.TotalSeconds;Role=@('server','client1','client2')[$i];WorkingBytes=$process.WorkingSet64;PrivateBytes=$process.PrivateMemorySize64;CpuSeconds=$process.TotalProcessorTime.TotalSeconds})
         }
         Start-Sleep -Milliseconds 500
     }
-} finally {
+} catch {$failure=$_} finally {
     $cleanupErrors=@()
     foreach($process in @($owned | Select-Object -Skip 1)) {
         if(!$process.HasExited){$process.CloseMainWindow()|Out-Null;if(!$process.WaitForExit(15000)){Stop-Process -Id $process.Id;$cleanupErrors+='Native fixture required forced close'}}
@@ -50,6 +68,8 @@ try {
     }
     $samples | Export-Csv -LiteralPath "$root/process-samples.csv" -NoTypeInformation
     foreach($path in $hashes.Keys){if((Get-FileHash -LiteralPath $path).Hash -ne $hashes[$path]){throw 'Original source save changed'}}
+    # Report the original failure; cleanup consequences would otherwise mask it.
+    if($failure){throw $failure}
     if($cleanupErrors.Count){throw ($cleanupErrors -join '; ')}
 }
 $serverText=Get-Content -LiteralPath "$root/server.log" -Raw
@@ -61,6 +81,7 @@ if($Simulation) {
     $summary=foreach($role in @('server','client1','client2')) {
         $rows=@($samples | Where-Object Role -eq $role)
         $steady=@($rows | Where-Object Seconds -ge ($Seconds-30))
+        if($Handoff -and $role -eq @('server','client1','client2')[$departed]){continue}
         if($steady.Count -lt 2){throw "Insufficient steady performance samples: $role"}
         $cpu=($steady[-1].CpuSeconds-$steady[0].CpuSeconds)/($steady[-1].Seconds-$steady[0].Seconds)
         $resident=($rows | Measure-Object WorkingBytes -Maximum).Maximum/1MB
@@ -81,11 +102,23 @@ foreach($role in @('host','guest')) {
     if($Simulation) {
         if($log.Contains('native worker execution fenced after connection loss')){throw "$role lost simulation authority during gameplay: $root"}
         $performance=[regex]::Matches($log,'CoopNet gameplay performance: level (\d+) frames (\d+) fps ([\d.]+) p95_ms ([\d.]+) max_ms ([\d.]+) result (PASS|FAIL)')
+        # A handoff owner leaves before its steady-state frame window completes.
+        if(!$performance.Count -and $Handoff -and $role -eq $departedRole){continue}
         if(!$performance.Count){throw "$role native frame measurements missing: $root"}
         foreach($measurement in $performance) {
             if([int]$measurement.Groups[2].Value -lt 300 -or [double]$measurement.Groups[3].Value -lt 45 -or [double]$measurement.Groups[4].Value -ge 40){throw "$role native frame performance failed: $($measurement.Value) -- $root"}
         }
     }
+}
+if($Handoff) {
+    $handoffs=[regex]::Match($serverText,'SIMULATION_ACCEPTED catalogues \d+ states \d+ handoffs (\d+)')
+    if(!$handoffs.Success -or [int]$handoffs.Groups[1].Value -lt 1){throw "Server recorded no checkpoint handoff: $root"}
+    if($serverText.Contains('SIMULATION_REJECTED')){throw "Coordinator rejected a successor publication: $root"}
+    $successor=@('host','guest') | Where-Object {$_ -ne $departedRole}
+    $file=Get-ChildItem "$root/$successor/appdata/logs" -Filter '*.log' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    $log=Get-Content -LiteralPath $file.FullName -Raw
+    foreach($marker in @('native handoff checkpoint applied:','native handoff cell acknowledged:')){if(!$log.Contains($marker)){throw "$successor missing $marker -- $root"}}
+    Write-Output "PASS: $successor took over $($handoffs.Groups[1].Value) cells from departing owner $departedRole through coordinator checkpoints."
 }
 $archive=Join-Path $data 'world.bootstrap';$archiveHash=(Get-FileHash -LiteralPath $archive).Hash
 $restart=Start-Process -FilePath $server -ArgumentList '--experimental-bootstrap','1','--data',('"'+$data+'"'),'--port',"$Port",'--run-seconds','1' -WindowStyle Hidden -PassThru -RedirectStandardOutput "$root/restart.log" -RedirectStandardError "$root/restart-error.log"

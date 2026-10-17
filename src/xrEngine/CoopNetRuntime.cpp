@@ -117,6 +117,10 @@ struct Session {
     std::set<coopnet::Identity> region_participants;
     std::map<coopnet::RegionKey,coopnet::RegionLease> worker_leases;
     std::map<coopnet::RegionKey,coopnet::Identity> worker_acknowledged;
+    // Handoff checkpoints from the dedicated coordinator, and which lease
+    // epoch/revision each cell's records were natively applied for.
+    std::map<coopnet::RegionKey,coopnet::RegionAssembly> worker_handoffs;
+    std::map<coopnet::RegionKey,coopnet::RegionAck> worker_restored;
     struct WorkerCatalogue {
         coopnet::Identity epoch=0;
         std::uint32_t revision=0,offset=0,sequence=0;
@@ -602,12 +606,20 @@ void publish_dedicated_cells(Session& current,double elapsed) {
     for(const auto& entry:current.worker_leases) {
         const auto& lease=entry.second;
         if(lease.owner!=player || lease.key.level!=local.level || lease.stage!=coopnet::RegionStage::Restoring ||
-            lease.checkpoint!=1 || current.worker_acknowledged[lease.key]==lease.epoch)continue;
-        if(confirm_cell_native_restore(lease.key,lease.epoch,1) && current.client.send_region_frame({
+            !lease.checkpoint || current.worker_acknowledged[lease.key]==lease.epoch)continue;
+        // Seed cells restore from the loaded canonical world; handed-off cells
+        // only after their coordinator checkpoint was applied for this lease.
+        if(lease.checkpoint!=1) {
+            const auto restored=current.worker_restored.find(lease.key);
+            if(restored==current.worker_restored.end() || restored->second.epoch!=lease.epoch || restored->second.checkpoint!=lease.checkpoint)continue;
+        }
+        if(confirm_cell_native_restore(lease.key,lease.epoch,lease.checkpoint) && current.client.send_region_frame({
             coopnet::Message::RegionAck,coopnet::Channel::World,coopnet::Delivery::ReliableOrdered,0,
-            coopnet::encode_region_ack({lease.key,lease.epoch,1})})==coopnet::SendResult::Sent) {
+            coopnet::encode_region_ack({lease.key,lease.epoch,lease.checkpoint})})==coopnet::SendResult::Sent) {
             current.worker_acknowledged[lease.key]=lease.epoch;
-            Msg("* CoopNet native seed cell acknowledged: level %u cell %d %d epoch %llu",lease.key.level,lease.key.x,lease.key.z,lease.epoch);
+            Msg("* CoopNet native %s cell acknowledged: level %u cell %d %d epoch %llu checkpoint %u",lease.checkpoint==1 ? "seed" : "handoff",
+                lease.key.level,lease.key.x,lease.key.z,lease.epoch,lease.checkpoint);
+            engine_coopnet::flush_report(); // Rare ownership event; external acceptance harnesses read it live.
         }
     }
     current.worker_publish_wait+=elapsed;
@@ -619,10 +631,17 @@ void publish_dedicated_cells(Session& current,double elapsed) {
     std::map<coopnet::RegionKey,std::vector<coopnet::WorldPose>> states;
     for(const auto& entry:current.worker_leases)if(entry.second.owner==player && entry.second.stage==coopnet::RegionStage::Active &&
         current.worker_acknowledged[entry.first]==entry.second.epoch)catalogues[entry.first];
+    // Runtime spawns get different native IDs on each client, so a local object's
+    // ID-derived anchor can collide with a stand-in bound to the shared catalogue.
+    // The bound stand-in is the shared identity; skip the divergent local copy.
+    std::set<std::uint64_t> bound,published;unsigned collisions=0;
+    for(const auto& native:objects)if(native.anchor)bound.insert(native.anchor);
     for(const auto& native:objects) {
         if(!catalogues.count(native.simulation_region))continue;
+        const auto anchor=native.anchor ? native.anchor : coopnet::world_anchor(current.client.session().welcome().session,native.object);
+        if((!native.anchor && bound.count(anchor)) || !published.insert(anchor).second){++collisions;continue;}
         coopnet::NPCRecord record;record.section=native.section;record.visual=native.visual;record.name=native.name;record.shapes=native.shapes;
-        auto& pose=record.pose;pose.anchor=coopnet::world_anchor(current.client.session().welcome().session,native.object);
+        auto& pose=record.pose;pose.anchor=anchor;
         pose.incarnation=native.incarnation;pose.health=native.health;pose.zone_state=native.zone_state;pose.zone_time=native.zone_time;
         for(unsigned axis=0;axis<3;++axis){pose.position[axis]=native.position[axis];pose.rotation[axis]=native.rotation[axis];}
         if(native.killer!=0xffff) {
@@ -659,7 +678,8 @@ void publish_dedicated_cells(Session& current,double elapsed) {
             outgoing.offset=end;
             if(end==total){
                 outgoing.signature=std::move(outgoing.pending_signature);outgoing.payload.clear();
-                Msg("* CoopNet native worker catalogue sent: level %u cell %d %d objects %u revision %u",level,entry.first.x,entry.first.z,static_cast<unsigned>(entry.second.size()),outgoing.revision);
+                Msg("* CoopNet native worker catalogue sent: level %u cell %d %d objects %u revision %u identity collisions skipped %u",level,entry.first.x,entry.first.z,
+                    static_cast<unsigned>(entry.second.size()),outgoing.revision,collisions);
             }
         }
         if(!outgoing.revision || !outgoing.payload.empty())continue;
@@ -2215,8 +2235,36 @@ void command(const char* name, const char* arguments) {
             });
             next->client.set_region_sink([owner](const coopnet::Frame& frame) {
                 if(owner->client.roster() && owner->client.roster()->current().dedicated) {
+                    if(frame.sequence)return false;
+                    if(frame.message==coopnet::Message::RegionChunk) {
+                        coopnet::RegionChunk chunk;if(!coopnet::decode_region_chunk(frame.payload,chunk))return false;
+                        // Reliable ordering delivers the lease first; anything else is stale.
+                        const auto lease=owner->worker_leases.find(chunk.key);
+                        if(lease==owner->worker_leases.end() || lease->second.owner!=owner->client.session().welcome().player ||
+                            lease->second.stage!=coopnet::RegionStage::Restoring || lease->second.epoch!=chunk.epoch ||
+                            lease->second.checkpoint!=chunk.revision)return true;
+                        auto& assembly=owner->worker_handoffs[chunk.key];
+                        if(assembly.complete() || assembly.context().epoch!=chunk.epoch || assembly.context().checkpoint!=chunk.revision)assembly.clear();
+                        if(!assembly.accept(chunk))return false;
+                        if(!assembly.complete())return true;
+                        std::vector<coopnet::NPCRecord> records;
+                        if(!coopnet::decode_region_catalogue(assembly.bytes(),records))return false;
+                        unsigned applied=0;std::vector<std::uint64_t> anchors;
+                        for(const auto& record:records)anchors.push_back(record.pose.anchor);
+                        const auto rooted=adopt_cell_roots(owner->client.session().welcome().session,chunk.key,anchors);
+                        for(const auto& record:records) {
+                            const auto& pose=record.pose;
+                            if(apply_world_object(owner->client.session().welcome().session,pose.anchor,pose.incarnation,pose.position.data(),pose.rotation.data(),
+                                pose.health,pose.animations,pose.zone_state,pose.zone_time,pose.killer,pose.killer_player,pose.physics))++applied;
+                        }
+                        owner->worker_restored[chunk.key]={chunk.key,chunk.epoch,chunk.revision};
+                        Msg("* CoopNet native handoff checkpoint applied: level %u cell %d %d epoch %llu checkpoint %u records %u rooted %u applied %u",
+                            chunk.key.level,chunk.key.x,chunk.key.z,chunk.epoch,chunk.revision,static_cast<unsigned>(records.size()),rooted,applied);
+                        engine_coopnet::flush_report();
+                        assembly.clear();return true;
+                    }
                     coopnet::RegionLease lease;
-                    if(frame.sequence || frame.message!=coopnet::Message::RegionLease || !coopnet::decode_region_lease(frame.payload,lease))return false;
+                    if(frame.message!=coopnet::Message::RegionLease || !coopnet::decode_region_lease(frame.payload,lease))return false;
                     if(!observe_cell_lease(lease))return false;
                     owner->worker_leases[lease.key]=lease;return true;
                 }

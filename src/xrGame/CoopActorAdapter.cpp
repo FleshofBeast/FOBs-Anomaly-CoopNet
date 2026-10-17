@@ -1060,13 +1060,16 @@ bool capture_world_objects(std::uint32_t& level,std::vector<NativeWorldPose>& ob
         auto* zone=smart_cast<CCustomZone*>(object);
         if ((!entity && !zone) || object->cast_actor() || object->getDestroy() || private_quest_followers.count(object->ID())) continue;
         if(world_level_is_replica() && !native_online_cell_owned(object)) continue;
-        NativeWorldPose pose; pose.object=object->ID(); pose.incarnation=record.second.incarnation;
+        NativeWorldPose pose; pose.object=object->ID(); pose.anchor=record.second.anchor; pose.incarnation=record.second.incarnation;
         if(world_level_is_replica()) {
             const auto* source=ai().alife().objects().object(object->ID(),true);
             if(!native_simulation_region(source,pose.simulation_region))continue;
             const auto lifetime=alife_lifetimes.find(source);
             if(lifetime==alife_lifetimes.end())return false;
-            pose.incarnation=lifetime->second;
+            // A lifetime bound from a received catalogue keeps its shared incarnation
+            // after ownership changes; local counters differ per client and would make
+            // the coordinator's catalogue look like new lifetimes, spawning duplicates.
+            pose.incarnation=record.second.authority ? record.second.authority : lifetime->second;
         }
         pose.section=object->cNameSect().c_str();pose.name=object->cName().c_str(); if (object->cNameVisual().size()) pose.visual=object->cNameVisual().c_str();
         for (unsigned axis=0;axis<3;++axis) pose.position[axis]=object->Position()[axis];
@@ -2274,6 +2277,18 @@ void configure_cell_simulation(std::uint64_t player,std::uint32_t level,double w
 bool observe_cell_lease(const coopnet::RegionLease& lease) {return cell_simulation.observe(lease);}
 bool confirm_cell_native_restore(const coopnet::RegionKey& key,std::uint64_t epoch,std::uint32_t revision) {
     return cell_simulation.native_restored({key,epoch,revision});
+}
+unsigned adopt_cell_roots(std::uint64_t session,const coopnet::RegionKey& key,const std::vector<std::uint64_t>& anchors) {
+    if(!ai().get_alife() || anchors.empty()) return 0;
+    // A successor inherits home cells from the coordinator; deriving them from
+    // later positions would publish a wandered planner under a different cell.
+    const std::set<std::uint64_t> wanted(anchors.begin(),anchors.end());std::set<const CSE_Abstract*> adopted;
+    // Catalogue-bound stand-ins carry the publisher's anchor, not one derived from their local ID.
+    for(const auto& record:world_objects) if(record.second.anchor && wanted.count(record.second.anchor))
+        if(const auto* source=ai().alife().objects().object(record.first->ID(),true)) {native_region_roots[source]=key;adopted.insert(source);}
+    for(const auto& entry:ai().alife().objects().objects())
+        if(!adopted.count(entry.second) && wanted.count(coopnet::world_anchor(session,entry.first))) {native_region_roots[entry.second]=key;adopted.insert(entry.second);}
+    return static_cast<unsigned>(adopted.size());
 }
 bool has_owned_cell_simulation() {return cell_simulation.has_owned();}
 bool native_alife_authorized(const CSE_Abstract* source) {

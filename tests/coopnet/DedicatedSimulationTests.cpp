@@ -19,7 +19,16 @@ int main() {
         client.set_baseline_sink([](const WorldBaseline&,const std::vector<std::uint8_t>&){return true;});
     };
     owner.set_region_sink([&](const Frame& frame){RegionLease lease;if(!decode_region_lease(frame.payload,lease))return false;owned[lease.key]=lease;return true;});
-    observer.set_region_sink([&](const Frame& frame){RegionLease lease;if(!decode_region_lease(frame.payload,lease))return false;observed[lease.key]=lease;return true;});
+    std::map<RegionKey,RegionAssembly> handoffs;std::map<RegionKey,std::vector<NPCRecord>> restored;
+    observer.set_region_sink([&](const Frame& frame){
+        if(frame.message==Message::RegionChunk) {
+            RegionChunk chunk;if(!decode_region_chunk(frame.payload,chunk))return false;
+            auto& handoff=handoffs[chunk.key];
+            if(handoff.complete() || (!chunk.offset && handoff.context().epoch!=chunk.epoch))handoff.clear();
+            if(!handoff.accept(chunk))return false;
+            return !handoff.complete() || decode_region_catalogue(handoff.bytes(),restored[chunk.key]);
+        }
+        RegionLease lease;if(!decode_region_lease(frame.payload,lease))return false;observed[lease.key]=lease;return true;});
     observer.set_shared_world_sink([&](SharedKind kind,std::uint32_t level,const std::vector<std::uint8_t>& data){if(kind==SharedKind::NPC){require(level==3);require(decode_npcs(data,catalogue));}});
     observer.set_world_sink([&](const WorldState& state){require(state.objects.size()==1 && state.objects[0].anchor==999);++rendered;});
     owner.set_world_sink([&](const WorldState&){++owner_echoes;});
@@ -63,15 +72,33 @@ int main() {
     npc.pose.position[0]=800;publish(owned.at(key),{npc},2);pump();
     require(server.simulation()->accepted_catalogues()==10 && catalogue.at(0).pose.position[0]==800);
     state(owner,3);require(server.simulation()->accepted_states()==1 && rendered==1);
-    // Departing cells revoke the old worker even after it leaves their interest.
-    input(owner,2,3000);pump();require(owned.at(key).stage==RegionStage::Quiescing);
+    // Departing cells revoke the old worker even after it leaves their interest;
+    // its last accepted catalogue completes the handoff barrier.
+    const auto successor=observer.session().welcome().player;
+    input(owner,2,3000);pump(20);
+    require(owned.at(key).owner!=player && owned.at(key).stage!=RegionStage::Active);
     state(owner,4);require(server.simulation()->accepted_states()==1);
-    owner.stop();pump();require(observed.at(key).owner==observer.session().welcome().player);
-    require(observed.at(key).stage==RegionStage::Restoring);
-    // The original seed cannot authorize replaying stale AI after reassignment.
     const auto lease=observed.at(key);
-    require(observer.send_region_frame({Message::RegionAck,Channel::World,Delivery::ReliableOrdered,0,encode_region_ack({key,lease.epoch,1})})==SendResult::Sent);
-    pump();require(observed.at(key).stage==RegionStage::Restoring);
-    observer.stop();server.stop();
-    std::cout<<"Dedicated simulation: PASS (load barriers, 3x3 leases, catalogue aggregation, validated relay, revocation and stale seed fence)\n";
+    require(lease.owner==successor && lease.stage==RegionStage::Restoring && lease.checkpoint>1);
+    // The new owner receives the latest published records, not the seed.
+    require(restored.size()==9 && handoffs.at(key).context().checkpoint==lease.checkpoint);
+    const auto& records=restored.at(key);
+    require(records.size()==1 && records[0].pose.anchor==999 && records[0].pose.position[0]==800);
+    // The original seed cannot authorize replaying stale AI after reassignment.
+    auto acknowledge=[&](std::uint32_t checkpoint){require(observer.send_region_frame({Message::RegionAck,Channel::World,Delivery::ReliableOrdered,0,encode_region_ack({key,lease.epoch,checkpoint})})==SendResult::Sent);pump();};
+    acknowledge(1);require(observed.at(key).stage==RegionStage::Restoring);
+    acknowledge(lease.checkpoint+1);require(observed.at(key).stage==RegionStage::Restoring);
+    acknowledge(lease.checkpoint);require(observed.at(key).stage==RegionStage::Active && server.simulation()->handoffs()==1);
+    // The successor's catalogues use their own epoch revision space.
+    const auto catalogues=server.simulation()->accepted_catalogues();
+    const auto payload=encode_region_catalogue({npc});
+    require(observer.send_region_frame({Message::RegionChunk,Channel::World,Delivery::ReliableOrdered,0,
+        encode_region_chunk({key,lease.epoch,1,static_cast<std::uint32_t>(payload.size()),0,payload})})==SendResult::Sent);
+    pump();require(server.simulation()->accepted_catalogues()==catalogues+1);
+    RegionState next{key,lease.epoch,{3,1,{{999,7,{800,0,50},{},1}}}};
+    require(observer.send_region_frame({Message::RegionState,Channel::AI,Delivery::UnreliableSequenced,1,encode_region_state(next)})==SendResult::Sent);
+    pump();require(server.simulation()->accepted_states()==2);
+    require(owner.session().state()==ClientState::Connected && observer.session().state()==ClientState::Connected);
+    observer.stop();owner.stop();server.stop();
+    std::cout<<"Dedicated simulation: PASS (load barriers, 3x3 leases, catalogue aggregation, validated relay, revocation, checkpoint handoff and stale seed fence)\n";
 }

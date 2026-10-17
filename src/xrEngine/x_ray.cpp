@@ -8,6 +8,7 @@
 #include "stdafx.h"
 #include "CoopNetRuntime.h"
 void engine_coopnet::report(const char* text) { Msg("%s", text); }
+void engine_coopnet::flush_report() { FlushLog(); }
 #include "igame_level.h"
 #include "igame_persistent.h"
 

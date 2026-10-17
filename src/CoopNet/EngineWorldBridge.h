@@ -54,6 +54,9 @@ void display_party_status(unsigned stage,unsigned present,unsigned required,std:
 struct NativeWorldPose {
     coopnet::RegionKey simulation_region;
     std::uint16_t object=0xffff;
+    // Network identity bound by a received catalogue (0: derive from object).
+    // Native IDs of runtime spawns differ per client, so this must be preserved.
+    std::uint64_t anchor=0;
     std::uint64_t incarnation=0;
     float position[3]{},rotation[3]{},health=0;
     std::string section,visual,name;
@@ -119,6 +122,8 @@ bool native_gameplay_frame_ready();
 void configure_cell_simulation(std::uint64_t player,std::uint32_t level,double width,bool coordinator);
 bool observe_cell_lease(const coopnet::RegionLease& lease);
 bool confirm_cell_native_restore(const coopnet::RegionKey& key,std::uint64_t epoch,std::uint32_t revision);
+// Adopt the coordinator's home cell for each checkpointed anchor; returns how many matched.
+unsigned adopt_cell_roots(std::uint64_t session,const coopnet::RegionKey& key,const std::vector<std::uint64_t>& anchors);
 bool has_owned_cell_simulation();
 bool native_alife_authorized(const CSE_Abstract* object);
 bool world_level_is_replica();
