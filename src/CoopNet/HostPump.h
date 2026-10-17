@@ -528,6 +528,13 @@ public:
             return queue(peer,{Message::PlayerHit,Channel::Combat,Delivery::ReliableOrdered,hit.sequence,encode_world_hit(hit)});
         return false;
     }
+    // Dedicated routing: deliver a validated shot to the client simulating its target.
+    bool forward_world_hit(Identity owner,const WorldHit& hit) {
+        if(!valid_world_hit(hit) || !actors_.count(hit.actor)) return false;
+        for(auto& peer:peers_) if(peer.player==owner && peer.ready && !peer.assigned && peer.level==hit.level)
+            return queue(peer,{Message::WorldHit,Channel::Combat,Delivery::ReliableOrdered,hit.sequence,encode_world_hit(hit)});
+        return false;
+    }
     // Held controls expire after packet loss; callers apply them on host simulation ticks.
     bool latest_input(Identity player, ActorInput& output) const {
         for (const auto& peer : peers_) if (peer.player == player && peer.ready && !peer.assigned &&

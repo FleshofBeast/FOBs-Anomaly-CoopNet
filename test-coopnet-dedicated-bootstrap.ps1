@@ -1,6 +1,6 @@
-param([ValidateRange(60,180)][int]$Seconds=100,[ValidateRange(1024,65535)][int]$Port=27893,[switch]$Simulation,[string]$FixtureSave='player - autosave',[switch]$Peaceful,[switch]$Handoff)
+param([ValidateRange(60,180)][int]$Seconds=100,[ValidateRange(1024,65535)][int]$Port=27893,[switch]$Simulation,[string]$FixtureSave='player - autosave',[switch]$Peaceful,[switch]$Handoff,[switch]$RoutedHit,[ValidateRange(0,170)][int]$HandoffAt=0)
 $ErrorActionPreference='Stop'
-if($Handoff -and !$Simulation){throw '-Handoff requires -Simulation'}
+if(($Handoff -or $RoutedHit) -and !$Simulation){throw '-Handoff and -RoutedHit require -Simulation'}
 $root=Join-Path $PSScriptRoot ('_build/dedicated-native-'+[guid]::NewGuid().ToString('N'))
 $source=Join-Path (Split-Path $PSScriptRoot) 'Anomaly-1.5.3/appdata/savedgames'
 $seed=Join-Path $source "$FixtureSave.scop"
@@ -32,12 +32,13 @@ try {
         if($Simulation){$clientArguments+='-coop_performance_probe'}
         # Test environment: neutral human factions and an arrival away from hostile squads.
         if($Peaceful){$clientArguments+='-coop_peaceful_probe'}
+        if($RoutedHit){$clientArguments+='-coop_routed_hit_probe'}
         $owned+=Start-Process -FilePath "$clientRoot/bin/AnomalyDX11.exe" -WorkingDirectory $clientRoot -ArgumentList $clientArguments -WindowStyle Hidden -PassThru
     }
     $watch=[Diagnostics.Stopwatch]::StartNew()
     while($watch.Elapsed.TotalSeconds -lt $Seconds) {
         # Handoff: halfway through, close the client that acknowledged seed cells.
-        if($Handoff -and !$departedRole -and $watch.Elapsed.TotalSeconds -ge $Seconds/2) {
+        if($Handoff -and !$departedRole -and $watch.Elapsed.TotalSeconds -ge $(if($HandoffAt){$HandoffAt}else{$Seconds/2})) {
             foreach($index in 1,2) {
                 $role=@('host','guest')[$index-1]
                 $file=Get-ChildItem "$root/$role/appdata/logs" -Filter '*.log' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
@@ -119,6 +120,15 @@ if($Handoff) {
     $log=Get-Content -LiteralPath $file.FullName -Raw
     foreach($marker in @('native handoff checkpoint applied:','native handoff cell acknowledged:')){if(!$log.Contains($marker)){throw "$successor missing $marker -- $root"}}
     Write-Output "PASS: $successor took over $($handoffs.Groups[1].Value) cells from departing owner $departedRole through coordinator checkpoints."
+}
+if($RoutedHit) {
+    $routed=[regex]::Match($serverText,'routed_hits (\d+)')
+    if(!$routed.Success -or [int]$routed.Groups[1].Value -lt 1){throw "Server routed no hits to a cell owner: $root"}
+    $texts=foreach($role in @('host','guest')){$file=Get-ChildItem "$root/$role/appdata/logs" -Filter '*.log' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1;Get-Content -LiteralPath $file.FullName -Raw}
+    if(!($texts | Where-Object {$_.Contains('routed hit probe queued:')})){throw "No observer queued the routed hit probe: $root"}
+    if(!($texts | Where-Object {$_.Contains('remote player proxy spawned:') -and $_.Contains('routed remote hit applied:')})){throw "Owner did not apply the routed hit through a native proxy: $root"}
+    if($texts | Where-Object {$_.Contains('routed remote hit not applied')}){throw "Owner rejected a routed hit: $root"}
+    Write-Output "PASS: observer shot reached the cell owner and applied natively through the shooter's proxy ($($routed.Groups[1].Value) routed)."
 }
 $archive=Join-Path $data 'world.bootstrap';$archiveHash=(Get-FileHash -LiteralPath $archive).Hash
 $restart=Start-Process -FilePath $server -ArgumentList '--experimental-bootstrap','1','--data',('"'+$data+'"'),'--port',"$Port",'--run-seconds','1' -WindowStyle Hidden -PassThru -RedirectStandardOutput "$root/restart.log" -RedirectStandardError "$root/restart-error.log"

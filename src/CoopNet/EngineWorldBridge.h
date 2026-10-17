@@ -23,6 +23,7 @@ bool apply_player_hit(std::uint64_t session,const coopnet::WorldHit& hit);
 bool peek_world_hit(coopnet::WorldHit& hit);
 void discard_world_hit();
 bool apply_world_hit(std::uint64_t session,std::uint16_t actor,const coopnet::WorldHit& hit);
+bool apply_owned_world_hit(std::uint64_t session,std::uint16_t shooter,const coopnet::WorldHit& hit);
 void exercise_shared_hit_probe();
 // Owner-thread save/load adapter. Names originate locally, never from network payloads.
 bool capture_world_baseline(const char* name,std::uint32_t& level,std::vector<std::uint8_t>& bytes);
@@ -127,6 +128,7 @@ unsigned adopt_cell_roots(std::uint64_t session,const coopnet::RegionKey& key,co
 bool has_owned_cell_simulation();
 bool native_alife_authorized(const CSE_Abstract* object);
 bool world_level_is_replica();
+void audit_script_storage_on_destroy(CGameObject* object);
 bool capture_death_camera(float* position,float* rotation);
 void orbit_death_camera(float yaw,float pitch);
 bool exercise_death_orbit_probe();

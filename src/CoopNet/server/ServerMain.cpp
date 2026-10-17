@@ -129,7 +129,7 @@ int main(int argc,char** argv) {
             if(ready!=coordinator.host().ready_participants()) {ready=coordinator.host().ready_participants();std::cout<<"ADMITTED_CLIENTS "<<ready<<'\n'<<std::flush;}
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        if(const auto* cells=coordinator.simulation())std::cout<<"SIMULATION_ACCEPTED catalogues "<<cells->accepted_catalogues()<<" states "<<cells->accepted_states()<<" handoffs "<<cells->handoffs()<<'\n';
+        if(const auto* cells=coordinator.simulation())std::cout<<"SIMULATION_ACCEPTED catalogues "<<cells->accepted_catalogues()<<" states "<<cells->accepted_states()<<" handoffs "<<cells->handoffs()<<" routed_hits "<<cells->routed_hits()<<'\n';
         coordinator.stop();std::cout<<"SERVER_STOPPED\n";return 0;
     } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
 }

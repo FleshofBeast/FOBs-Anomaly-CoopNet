@@ -166,6 +166,8 @@ void CGameObject::net_Destroy()
 	//.	Parent									= 0;
 
 	CScriptBinder::net_Destroy();
+	// Fixture diagnostic: script storage must not outlive the game object.
+	engine_coopnet::audit_script_storage_on_destroy(this);
 
 	xr_delete(m_lua_game_object);
 	m_spawned = false;

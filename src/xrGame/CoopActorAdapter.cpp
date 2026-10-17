@@ -1163,6 +1163,9 @@ bool intercept_player_hit(CGameObject* target,const SHit& hit) {
     if(!native_world_requested() || applying_player_hit || !target || !target->cast_actor()) return false;
     auto* actor=target->cast_actor();
     if(guest_native_world()) {
+        // A remote player's native proxy: its real health lives on that player's
+        // client. Until NPC damage is routed there, the proxy does not take it.
+        if(actor->is_coopnet_guest()) return true;
         if(native_online_cell_owned(smart_cast<CGameObject*>(hit.who)))return false;
         const auto found=world_objects.find(smart_cast<CGameObject*>(hit.who));
         // Shared attackers hit on the authority; local anomalies and private NPCs stay native.
@@ -1212,6 +1215,20 @@ bool apply_player_hit(std::uint64_t session,const coopnet::WorldHit& h) {
 }
 bool peek_world_hit(coopnet::WorldHit& hit) { if (local_world_hits.empty()) return false; hit=local_world_hits.front(); return true; }
 void discard_world_hit() { if (!local_world_hits.empty()) local_world_hits.pop_front(); }
+namespace {
+bool apply_native_hit(CActor* actor,CEntityAlive* target,const coopnet::WorldHit& hit,const char* label) {
+    if (!target->g_Alive() || target->AlreadyDie() || actor->Position().distance_to_sqr(target->Position())>1000000.f) return false;
+    auto* skeleton=target->Visual() ? target->Visual()->dcast_PKinematics() : nullptr;
+    if (hit.bone!=0xffff && (!skeleton || hit.bone>=skeleton->LL_BoneCount())) return false;
+    Fvector direction,point; direction.set(hit.direction[0],hit.direction[1],hit.direction[2]);
+    point.set(hit.bone_position[0],hit.bone_position[1],hit.bone_position[2]);
+    SHit native(hit.power,direction,actor,hit.bone,point,hit.impulse,static_cast<ALife::EHitType>(hit.type),hit.armor_piercing,hit.aim_bullet);
+    native.add_wound=hit.add_wound;
+    const auto previous=target->GetfHealth(); target->Hit(&native);
+    Msg("* CoopNet %s: target %llu sequence %u health %.3f -> %.3f",label,hit.target,hit.sequence,previous,target->GetfHealth());
+    return true;
+}
+}
 bool apply_world_hit(std::uint64_t session_id,std::uint16_t actor_id,const coopnet::WorldHit& hit) {
     if (!native_world_requested() || world_level_is_replica() || !g_pGameLevel || !coopnet::valid_world_hit(hit)) return false;
     auto* actor=smart_cast<CActor*>(Level().Objects.net_Find(actor_id));
@@ -1220,20 +1237,52 @@ bool apply_world_hit(std::uint64_t session_id,std::uint16_t actor_id,const coopn
         auto* target=smart_cast<CEntityAlive*>(const_cast<CGameObject*>(binding.first));
         if (!target || target->cast_actor() || binding.second.replica || target->getDestroy() || private_quest_followers.count(target->ID()) ||
             binding.second.incarnation!=hit.incarnation || coopnet::world_anchor(session_id,target->ID())!=hit.target) continue;
-        if (!target->g_Alive() || target->AlreadyDie() || actor->Position().distance_to_sqr(target->Position())>1000000.f) return false;
-        auto* skeleton=target->Visual() ? target->Visual()->dcast_PKinematics() : nullptr;
-        if (hit.bone!=0xffff && (!skeleton || hit.bone>=skeleton->LL_BoneCount())) return false;
-        Fvector direction,point; direction.set(hit.direction[0],hit.direction[1],hit.direction[2]);
-        point.set(hit.bone_position[0],hit.bone_position[1],hit.bone_position[2]);
-        SHit native(hit.power,direction,actor,hit.bone,point,hit.impulse,static_cast<ALife::EHitType>(hit.type),hit.armor_piercing,hit.aim_bullet);
-        native.add_wound=hit.add_wound;
-        const auto previous=target->GetfHealth(); target->Hit(&native);
-        Msg("* CoopNet shared guest hit applied: target %llu sequence %u health %.3f -> %.3f",hit.target,hit.sequence,previous,target->GetfHealth());
-        return true;
+        return apply_native_hit(actor,target,hit,"shared guest hit applied");
+    }
+    return false;
+}
+// Dedicated owner: a remote player's routed shot on an NPC this client simulates.
+// The shooter is that player's native proxy, so attribution and aggression stay native.
+bool apply_owned_world_hit(std::uint64_t session_id,std::uint16_t shooter,const coopnet::WorldHit& hit) {
+    if (!guest_native_world() || !g_pGameLevel || !ai().get_alife() || !coopnet::valid_world_hit(hit)) return false;
+    auto* actor=smart_cast<CActor*>(Level().Objects.net_Find(shooter));
+    if (!actor || !actor->is_coopnet_guest() || actor->getDestroy()) return false;
+    for (const auto& binding:world_objects) {
+        auto* target=smart_cast<CEntityAlive*>(const_cast<CGameObject*>(binding.first));
+        if (!target || target->cast_actor() || target->getDestroy() || private_quest_followers.count(target->ID()) ||
+            !native_online_cell_owned(target) ||
+            (binding.second.anchor ? binding.second.anchor : coopnet::world_anchor(session_id,target->ID()))!=hit.target) continue;
+        // Match the lifetime this owner publishes for the target (capture_world_objects).
+        const auto* source=ai().alife().objects().object(target->ID(),true);
+        const auto lifetime=source ? alife_lifetimes.find(source) : alife_lifetimes.end();
+        const auto incarnation=binding.second.authority ? binding.second.authority : lifetime!=alife_lifetimes.end() ? lifetime->second : 0;
+        if (incarnation!=hit.incarnation) return false;
+        return apply_native_hit(actor,target,hit,"routed remote hit applied");
     }
     return false;
 }
 void exercise_shared_hit_probe() {
+    if (strstr(Core.Params,"-coop_routed_hit_probe")) {
+        // Fixture: one shot on a shared NPC that another client simulates, to
+        // prove dedicated routing to its cell owner. Owners never find a target.
+        static bool fired=false; static u32 first=0;
+        if (fired || !guest_native_world() || !g_actor || !native_character_ready() || local_world_hits.size()>=128) return;
+        if (!first) first=Device.dwTimeGlobal;
+        if (Device.dwTimeGlobal-first<15000) return;
+        for (const auto& binding:world_objects) {
+            auto* target=smart_cast<CEntityAlive*>(const_cast<CGameObject*>(binding.first));
+            if (!target || target->cast_actor() || target->getDestroy() || !target->g_Alive() || target->AlreadyDie() ||
+                !binding.second.replica || !binding.second.authority || !binding.second.anchor || native_online_cell_owned(target) ||
+                private_quest_followers.count(target->ID()) || g_actor->Position().distance_to_sqr(target->Position())>200.f*200.f) continue;
+            coopnet::WorldHit h; h.actor=1; h.generation=1; h.level=1;
+            h.target=binding.second.anchor; h.incarnation=binding.second.authority; h.sequence=++local_hit_sequence;
+            h.power=.05f; h.type=static_cast<std::uint8_t>(ALife::eHitTypeFireWound); h.direction={0,0,1};
+            local_world_hits.push_back(h); fired=true;
+            Msg("* CoopNet routed hit probe queued: target %llu section %s",h.target,target->cNameSect().c_str());
+            return;
+        }
+        return;
+    }
     if ((guest_native_world() || strstr(Core.Params,"-coop_live_combat_probe")) && strstr(Core.Params,"-coop_native_combat_probe")) {
         if (!g_actor || (guest_native_world() && !native_character_ready())) return;
         if (shared_hit_probe_fired) {set_local_movement_probe(0,0,0);return;}
@@ -3968,6 +4017,22 @@ bool capture_actor_appearance(std::uint16_t object,coopnet::ActorAppearance& out
     a.entity=1;a.generation=1;a.level=1;if(!coopnet::valid_appearance(a))return false;
     a.entity=0;a.generation=0;a.level=0;
     out=std::move(a);return true;
+}
+void audit_script_storage_on_destroy(CGameObject* object) {
+    if (!object || !strstr(Core.Params,"-coop_engine_fixture") || !guest_native_world() || !g_ai_space) return;
+    auto* state=ai().script_engine().lua(); if (!state) return;
+    const int top=lua_gettop(state);
+    string128 source; xr_sprintf(source,"return db and db.storage and db.storage[%u] and db.storage[%u].object ~= nil",object->ID(),object->ID());
+    bool stale=false;
+    if (!luaL_loadbuffer(state,source,xr_strlen(source),"@coopnet_storage_audit") && !lua_pcall(state,0,1,0)) stale=lua_toboolean(state,-1)!=0;
+    lua_settop(state,top);
+    if (!stale) return;
+    const auto found=world_objects.find(object);
+    const auto* actor=object->cast_actor();
+    Msg("! CoopNet stale script storage after destroy: id %u name %s section %s actor %u guest %u replica %u bound %u",object->ID(),
+        object->cName().c_str(),object->cNameSect().c_str(),actor!=nullptr,actor && actor->is_coopnet_guest(),
+        found!=world_objects.end() && found->second.replica,found!=world_objects.end() && found->second.anchor);
+    FlushLog();
 }
 bool character_selection_ready() {
     LocalActorPose local;

@@ -67,6 +67,17 @@ int main() {
     require(owner.session().state()==ClientState::Connected); // reordered/unbound state is dropped
     state(owner,3);require(server.simulation()->accepted_states()==1 && rendered==1);
     require(!owner_echoes);
+    // Shots on shared NPCs reach the client simulating the target's home cell.
+    std::vector<WorldHit> routed;owner.set_routed_hit_sink([&](const WorldHit& h){routed.push_back(h);});
+    auto shoot=[&](ClientPump& client,std::uint32_t sequence,Identity incarnation){
+        WorldHit h;const auto w=client.session().welcome();h.actor=w.player;h.generation=w.generation;h.level=3;h.sequence=sequence;
+        h.target=999;h.incarnation=incarnation;h.power=.5f;h.direction={1,0,0};
+        require(client.send_world_hit(h)==SendResult::Sent);pump();
+    };
+    shoot(observer,1,8);require(routed.empty()); // lifetime the owner does not publish
+    shoot(observer,2,7);require(routed.size()==1 && routed[0].target==999 && routed[0].actor==observer.session().welcome().player);
+    shoot(observer,2,7);require(routed.size()==1); // replay
+    shoot(owner,1,7);require(routed.size()==1 && server.simulation()->routed_hits()==1); // owners apply their own shots natively
     // A native planner walking across a boundary remains attached to its home
     // cell until an explicit checkpoint handoff changes simulation ownership.
     npc.pose.position[0]=800;publish(owned.at(key),{npc},2);pump();

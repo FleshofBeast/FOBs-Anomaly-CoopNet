@@ -318,3 +318,36 @@ rejection; identity collisions 0 (was 296), story_id duplicates 0 (was 7), no
 prefetch fault; successor 58.8 FPS / 18.7 ms p95. The collision skip remains as a
 guard. Still open: cross-map simulation, combat routing, ongoing persistence,
 observers far from the owner (revival is per catalogue entry, not distance-based).
+
+### Combat routing milestone 1: remote player proxies and routed shots (2026-10-17)
+
+Owner clients now spawn a native guest `CActor` proxy for each remote player on
+their level (only while they simulate cells), driven from the network pose with
+`apply_guest_owner_pose`/`control_guest_actor`; its body is not drawn because the
+remote visual already renders that player. Protocol 39: the coordinator routes a
+validated `WorldHit` (HostPump already checks shooter ownership, replay and
+budget) to the Active owner of the target's home cell, only for the incarnation
+that owner currently publishes; owners never receive their own shots. The owner
+applies it natively with the shooter's proxy as attacker (`apply_owned_world_hit`).
+NPC damage on proxies is absorbed for now: routing it to the real player is
+milestone 2, followed by proxy weapons/animation and NPC targeting checks.
+
+Evidence: portable `DedicatedSimulationTests` (stale lifetime, routed delivery,
+replay, owner self-shot) and Session/Protocol/Bootstrap suites pass. Native
+`-Simulation -Peaceful -RoutedHit` (fixture `-coop_routed_hit_probe`, one shot on
+a bound NPC the observer does not own): routed and applied through the proxy with
+damage, e.g. Devushka 0.886 -> 0.848 (`dedicated-native-daad42b5...`), and with a
+late `-Handoff -HandoffAt 88` in `dedicated-native-cb4b651f...` and
+`dedicated-native-211e3f83...` (both PASS).
+
+Open defects:
+- Intermittent (2 of ~5 late-handoff runs): right after a successor takes over,
+  `sim_squad_scripted` -> `setup_squad_and_group` -> `change_team` reaches a squad
+  member through a stale `db.storage` object whose game object was freed
+  ([BusyHandsDebug] "Accessing destroyed object", then heap corruption 0xc0000374
+  in `dedicated-native-62d4f9ca...`). `lua_error_not_crash` now logs the full Lua
+  stack and flushes; fixture builds log `stale script storage after destroy` with
+  the object's identity. Not yet caught with the audit enabled.
+- Exit crash at `xrCore/log.cpp:114` (logging after string-container teardown),
+  also seen on a plain non-CoopNet quit; likely pre-existing, does not affect play.
+- Short sessions can miss the 300-frame performance window (false gate failure).

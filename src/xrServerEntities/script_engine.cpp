@@ -246,12 +246,13 @@ void CScriptEngine::lua_error_not_crash(lua_State* L)
     xr_string lua_error_line = "";
     for (auto const& s : stack)
     {
-        if (s.find("[Lua]") != xr_string::npos)
-        {
+        // Record the whole stack: the access usually crashes next, so the
+        // log is the only place the offending script call survives.
+        Msg("[BusyHandsDebug] %s", s.c_str());
+        if (lua_error_line.empty() && s.find("[Lua]") != xr_string::npos)
             lua_error_line = s;
-            break;
-        }
     }
+    FlushLog();
 
     ::luabind::functor<void> funct;
     if (ai().script_engine().functor("_G.COnLuaBindFatalError", funct))

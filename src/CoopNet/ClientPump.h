@@ -71,6 +71,9 @@ class ClientPump {
     std::function<void(const ActorVitals&)> vitals_sink_;
     std::function<void(const WorldHit&)> player_hit_sink_;
     std::map<Identity,std::pair<std::uint32_t,SequenceWindow>> player_hit_sequences_;
+    // Dedicated routing: shots by remote players on targets this client simulates.
+    std::function<void(const WorldHit&)> routed_hit_sink_;
+    std::map<Identity,std::pair<std::uint32_t,SequenceWindow>> routed_hit_sequences_;
     std::function<void(const RespawnResult&)> respawn_sink_;
     std::map<std::uint32_t,RespawnRequest> pending_respawns_;
     std::map<std::uint32_t,DialogueRequest> pending_dialogue_;
@@ -86,7 +89,7 @@ class ClientPump {
     std::function<bool(const WorldBaseline&,const std::vector<std::uint8_t>&)> baseline_sink_;
     std::function<void(const WorldBaseline&,std::uint32_t)> baseline_progress_sink_;
     void clear_baseline() {
-        player_hit_sequences_.clear();
+        player_hit_sequences_.clear(); routed_hit_sequences_.clear();
         pending_dialogue_.clear(); dialogue_assembly_.clear();
         pending_respawns_.clear(); respawn_ticks_.clear();
         inventory_view_assembly_.clear(); inventory_views_={}; inventory_view_revision_=0;
@@ -186,6 +189,7 @@ public:
     void set_inventory_sink(std::function<void(const InventoryResult&)> sink) { inventory_sink_=std::move(sink); }
     void set_vitals_sink(std::function<void(const ActorVitals&)> sink) { vitals_sink_=std::move(sink); }
     void set_player_hit_sink(std::function<void(const WorldHit&)> sink) { player_hit_sink_=std::move(sink); }
+    void set_routed_hit_sink(std::function<void(const WorldHit&)> sink) { routed_hit_sink_=std::move(sink); }
     void set_respawn_sink(std::function<void(const RespawnResult&)> sink) { respawn_sink_=std::move(sink); }
     bool respawn_pending() const { return !pending_respawns_.empty(); }
     SendResult send_respawn(const RespawnRequest& request) {
@@ -523,6 +527,16 @@ public:
                 auto& sequence=player_hit_sequences_[hit.actor];
                 if(sequence.first!=hit.generation) sequence={hit.generation,{}};
                 if(sequence.second.accept(hit.sequence) && player_hit_sink_) player_hit_sink_(hit);
+            } else if (frame.message==Message::WorldHit) {
+                // Only a dedicated coordinator forwards other players' shots.
+                WorldHit hit;
+                if(!roster_ || !roster_->current().dedicated || !decode_world_hit(frame.payload,hit) || hit.sequence!=frame.sequence) {lost();return;}
+                const auto* actor=actors_.find(hit.actor);
+                if(!actor || actor->player==session_.welcome().player || actor->generation!=hit.generation ||
+                    actor->level!=hit.level || !level_ready_sent_ || assignment_.level!=hit.level) continue;
+                auto& sequence=routed_hit_sequences_[hit.actor];
+                if(sequence.first!=hit.generation) sequence={hit.generation,{}};
+                if(sequence.second.accept(hit.sequence) && routed_hit_sink_) routed_hit_sink_(hit);
             } else if (frame.message==Message::ActorVitals) {
                 ActorVitals vitals;
                 if (!decode_vitals(frame.payload,vitals) || vitals.tick!=frame.sequence) { lost(); return; }

@@ -33,6 +33,8 @@ public:
             if(!accepted && rejected)rejected(sender,frame);
             return accepted;
         });
+        // HostPump has already checked shooter ownership, replay and rate budget.
+        host_.set_world_hit_handler([this](Identity sender,const WorldHit& hit){simulation_->route_hit(sender,hit);});
     }
     void start(Identity session,BuildIdentity build,const WorldBaseline& world,
         std::shared_ptr<const std::vector<std::uint8_t>> bytes,std::function<Identity()> tokens,

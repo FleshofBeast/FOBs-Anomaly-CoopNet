@@ -121,6 +121,10 @@ struct Session {
     // epoch/revision each cell's records were natively applied for.
     std::map<coopnet::RegionKey,coopnet::RegionAssembly> worker_handoffs;
     std::map<coopnet::RegionKey,coopnet::RegionAck> worker_restored;
+    // Dedicated owners: a native actor proxy per remote player, so NPCs simulated
+    // here can perceive them and routed shots carry a native attacker.
+    struct RemoteProxy {std::uint16_t object=0xffff;std::uint32_t generation=0;};
+    std::map<coopnet::Identity,RemoteProxy> remote_proxies;
     struct WorkerCatalogue {
         coopnet::Identity epoch=0;
         std::uint32_t revision=0,offset=0,sequence=0;
@@ -962,13 +966,40 @@ void capture_host(Session& current, double elapsed) {
     ActorConditionState condition;
     if (capture_actor_condition(pose.object,condition)) current.host.publish_vitals({snapshot.entity,snapshot.generation,pose.level,current.tick,condition.health,condition.power,condition.radiation});
 }
+void retire_remote_proxies(Session& current,const std::set<coopnet::Identity>& kept) {
+    for(auto it=current.remote_proxies.begin();it!=current.remote_proxies.end();) {
+        if(kept.count(it->first)) {++it;continue;}
+        remove_guest_actor(it->second.object);
+        Msg("* CoopNet remote player proxy removed: object %u",it->second.object);
+        it=current.remote_proxies.erase(it);
+    }
+}
+void drive_remote_proxy(Session& current,const RemoteActorPose& pose,const coopnet::ActorSnapshot& sample,std::set<coopnet::Identity>& kept) {
+    auto found=current.remote_proxies.find(pose.entity);
+    if(found!=current.remote_proxies.end() && found->second.generation!=pose.generation) {
+        remove_guest_actor(found->second.object);current.remote_proxies.erase(found);found=current.remote_proxies.end();
+    }
+    if(found==current.remote_proxies.end()) {
+        const auto object=spawn_guest_actor();
+        if(object==0xffff)return;
+        found=current.remote_proxies.emplace(pose.entity,Session::RemoteProxy{object,pose.generation}).first;
+        Msg("* CoopNet remote player proxy spawned: object %u generation %u",object,pose.generation);
+    }
+    kept.insert(pose.entity);
+    // The proxy spawns asynchronously; these succeed once the native actor exists.
+    float velocity[3];for(unsigned axis=0;axis<3;++axis)velocity[axis]=sample.velocity[axis];
+    if(apply_guest_owner_pose(found->second.object,pose.position,velocity,pose.movement))
+        control_guest_actor(found->second.object,0,pose.rotation[1],pose.rotation[0]);
+}
 void present_client(Session& current, double elapsed) {
     if (current.server_clock_known) current.server_us += static_cast<std::uint64_t>(elapsed * 1000000);
     LocalActorPose local;
     if (current.client.session().state() != coopnet::ClientState::Connected || !capture_local_actor(local)) {
-        clear_remote_actors(); current.presented.clear(); return;
+        clear_remote_actors(); current.presented.clear(); retire_remote_proxies(current,{}); return;
     }
-    std::set<coopnet::Identity> visible;
+    // Proxies exist only where this client simulates shared NPCs.
+    const bool proxied=current.client.roster() && current.client.roster()->current().dedicated && has_owned_cell_simulation();
+    std::set<coopnet::Identity> visible,proxies;
     current.client.actors().visit([&](const coopnet::ActorPresence& actor) {
         if (actor.level != local.level || actor.player == current.client.session().welcome().player) return;
         coopnet::ActorSnapshot sample;
@@ -981,10 +1012,12 @@ void present_client(Session& current, double elapsed) {
         for (unsigned axis = 0; axis < 3; ++axis) {
             pose.position[axis] = sample.position[axis]; pose.rotation[axis] = sample.rotation[axis];
         }
+        if (proxied) drive_remote_proxy(current,pose,sample,proxies);
         if (present_remote_actor(pose)) visible.insert(actor.entity);
     });
     for (const auto entity : current.presented) if (!visible.count(entity)) remove_remote_actor(entity);
     current.presented = std::move(visible);
+    retire_remote_proxies(current,proxies);
 }
 void publish_world_settings(Session& current,double elapsed) {
     current.world_rules_wait+=elapsed; current.world_clock_wait+=elapsed;
@@ -2233,6 +2266,13 @@ void command(const char* name, const char* arguments) {
                     std::vector<coopnet::ContainerRecord> records; if (coopnet::decode_containers(bytes,records)) queue_container_catalogue(owner->client.session().welcome().session,level,records);
                 }
             });
+            next->client.set_routed_hit_sink([owner](const coopnet::WorldHit& hit) {
+                const auto proxy=owner->remote_proxies.find(hit.actor);
+                if(proxy==owner->remote_proxies.end() || proxy->second.generation!=hit.generation ||
+                    !apply_owned_world_hit(owner->client.session().welcome().session,proxy->second.object,hit))
+                    Msg("! CoopNet routed remote hit not applied: target %llu sequence %u proxy %u",hit.target,hit.sequence,
+                        proxy==owner->remote_proxies.end() ? 0u : 1u);
+            });
             next->client.set_region_sink([owner](const coopnet::Frame& frame) {
                 if(owner->client.roster() && owner->client.roster()->current().dedicated) {
                     if(frame.sequence)return false;
@@ -2511,6 +2551,11 @@ void join_status(char* output,unsigned capacity) {
 }
 unsigned long long host_save_source_scope() {return session && session->mode==coopnet::Mode::Host ? session->source_scope : 0;}
 bool guest_visual_owned(std::uint16_t object) {
+    // A remote player's proxy is drawn by its presentation visual, not twice.
+    if(session && session->mode==coopnet::Mode::Client) {
+        for(const auto& entry:session->remote_proxies) if(entry.second.object==object) return session->presented.count(entry.first)!=0;
+        return false;
+    }
     if(!session || session->mode!=coopnet::Mode::Host || !native_world_requested()) return false;
     for(const auto& entry:session->guests) if(entry.second.object==object) return session->presented.count(entry.second.entity)!=0;
     return false;

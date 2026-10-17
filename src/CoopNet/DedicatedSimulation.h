@@ -28,7 +28,7 @@ class DedicatedSimulation {
     struct CheckpointDelivery {Identity epoch=0;std::uint32_t checkpoint=0,offset=0;};
     std::map<RegionKey,CheckpointDelivery> deliveries_;
     std::uint32_t checkpoint_revision_=1; // Revision 1 is the shared seed.
-    std::uint64_t handoffs_=0;
+    std::uint64_t handoffs_=0,routed_hits_=0;
     std::uint32_t catalogue_revision_=0;
     std::uint32_t state_sequence_=0;
     bool dirty_=false;
@@ -40,6 +40,20 @@ public:
     std::uint64_t accepted_states() const {return accepted_states_;}
     std::uint64_t accepted_catalogues() const {return accepted_catalogues_;}
     std::uint64_t handoffs() const {return handoffs_;}
+    std::uint64_t routed_hits() const {return routed_hits_;}
+    // A player's shot on a shared NPC is applied by the client simulating that
+    // NPC's home cell, and only to the lifetime that owner currently publishes.
+    bool route_hit(Identity sender,const WorldHit& hit) {
+        const auto root=roots_.find(hit.target);
+        if(hit.level!=seed_.level || root==roots_.end())return false;
+        const auto* lease=regions_.lease(root->second);const auto cell=cells_.find(root->second);
+        if(!lease || lease->stage!=RegionStage::Active || !lease->owner || lease->owner==sender ||
+            cell==cells_.end() || cell->second.catalogue_epoch!=lease->epoch)return false;
+        const auto& records=cell->second.records;
+        if(std::none_of(records.begin(),records.end(),[&](const NPCRecord& n){return n.pose.anchor==hit.target && n.pose.incarnation==hit.incarnation;}))return false;
+        if(!host_.forward_world_hit(lease->owner,hit))return false;
+        ++routed_hits_;return true;
+    }
     bool interest(Identity player,const ActorInput& input) {
         for(const auto& connected:host_.session().players()) if(connected.id==player) {
             auto& generation=generations_[player];
