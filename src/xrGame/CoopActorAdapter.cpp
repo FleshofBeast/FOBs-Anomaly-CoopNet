@@ -1507,6 +1507,7 @@ void update_npc_catalogue() {
             retiring.insert(anchor);npc_dirty=true;
         }
     }
+    unsigned revived_this_pass=0;
     for (const auto& n:npc_catalogue) {
         if(retiring.count(n.pose.anchor)) continue;
         CGameObject* object=nullptr;
@@ -1527,6 +1528,31 @@ void update_npc_catalogue() {
                 (!record.second.authority || record.second.authority==n.pose.incarnation) && xr_strcmp(candidate->cNameSect().c_str(),n.section.c_str())==0) { object=candidate; break; }
         }
         if (!object) {
+            // Observers do not run ALife switching for cells they do not own, so the
+            // owner's online NPC can still be offline here under the same identity.
+            // Bring that original online instead of spawning a second copy; a copy
+            // would collide with it once this client takes over the cell.
+            if (ai().get_alife()) {
+                CSE_ALifeDynamicObject* original=nullptr;
+                for (const auto& entry:ai().alife().objects().objects()) {
+                    auto* candidate=entry.second;
+                    if (candidate->m_bOnline || candidate->ID_Parent!=0xffff || coopnet::world_anchor(npc_session,entry.first)!=n.pose.anchor) continue;
+                    if (!xr_strcmp(candidate->s_name,n.section.c_str()) && ai().game_graph().valid_vertex_id(candidate->m_tGraphID) &&
+                        static_cast<std::uint32_t>(ai().game_graph().vertex(candidate->m_tGraphID)->level_id())+1==npc_level) original=candidate;
+                    break;
+                }
+                if (original) {
+                    // Bursts of online switches race Anomaly's spawn prefetch thread;
+                    // bring a few per pass and retry the rest next frame.
+                    if (revived_this_pass>=4) {npc_dirty=true;continue;}
+                    ++revived_this_pass;
+                    const_cast<CALifeSimulator&>(ai().alife()).switch_online(original);
+                    npc_pending[n.pose.anchor]={original->ID,n.pose.incarnation};
+                    static unsigned revived=0;
+                    if (++revived<=3 || !(revived%50)) Msg("* CoopNet NPC original brought online: section %s anchor %llu total %u",n.section.c_str(),n.pose.anchor,revived);
+                    continue;
+                }
+            }
             if (!pSettings->section_exist(n.section.c_str())) { Msg("! CoopNet NPC spawn rejected: section %s unavailable",n.section.c_str()); continue; }
             Fvector position; position.set(n.pose.position[0],n.pose.position[1],n.pose.position[2]);
             const auto node=n.pose.zone_state!=255 ? g_actor->ai_location().level_vertex_id() : ai().level_graph().vertex(g_actor->ai_location().level_vertex_id(),position);

@@ -302,3 +302,19 @@ spawns ~298 catalogue stand-ins and keeps colliding local copies (296 skipped pe
 successor catalogue; 7 story_id duplicate warnings). Next: bind observers' native
 objects to catalogue anchors instead of replacing them, then retire the collision
 skip. Cross-map simulation, combat routing and ongoing persistence remain open.
+
+Observer duplication fixed (2026-10-16): observers do not run ALife switching for
+cells they do not own, so NPCs and zones the owner has online were still offline
+locally under the same identity; the catalogue then spawned a second copy of each
+(~298), which collided with the original once the observer took ownership. The
+observer now brings its own offline original online (same anchor, section and
+level) and binds it, spawning a stand-in only when no original exists. Revivals
+are limited to four per catalogue pass: an unthrottled burst crashed Anomaly's
+spawn prefetch thread (`CLevel::ProcessPrefetchEvents`) in
+`_build/dedicated-native-f66c5086994f4f8eb208410ece6d0aca`.
+`_build/dedicated-native-5396b03a68e348d09d8dfb7dc49be44d` PASSED with
+`-Simulation -Peaceful -Handoff`: 9 handoffs, 40 catalogues / 2,839 states, no
+rejection; identity collisions 0 (was 296), story_id duplicates 0 (was 7), no
+prefetch fault; successor 58.8 FPS / 18.7 ms p95. The collision skip remains as a
+guard. Still open: cross-map simulation, combat routing, ongoing persistence,
+observers far from the owner (revival is per catalogue entry, not distance-based).
